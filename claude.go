@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +36,7 @@ type Agent struct {
 	model, effort   string // turns
 	amodel, aeffort string // subagents
 	cmodel, ceffort string // compactions
+	cnice           int    // compactions run under nice -n this (0: as turns)
 	perm, cwd       string
 	tools           string
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
@@ -488,7 +490,11 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	case roleTurn: // the reply streams to the pages as it is written
 		args = append(args, "--include-partial-messages")
 	}
-	cmd := exec.CommandContext(ctx, "claude", args...)
+	name := "claude"
+	if r == roleCompact && a.cnice > 0 { // background work: turns keep the CPU when the machine is busy
+		name, args = "nice", append([]string{"-n", strconv.Itoa(a.cnice), "claude"}, args...)
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
 	// Stopped gently, so Claude Code can stop what its tools started, and so
 	// are they: its group (below).
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }

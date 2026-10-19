@@ -68,6 +68,7 @@ cache over.
 | `-agent-model`, `-agent-effort` | `opus`, `high` | for subagents |
 | `-agent-compact-max` | `400000` | compact a subagent's context past this, between two steps; `0`: never |
 | `-compact-model`, `-compact-effort` | `sonnet`, `medium` | for summaries (the recipe's: `haiku`) |
+| `-compact-nice` | `10` | summaries' CPU priority under `nice` (`0`: off) |
 | `-permission-mode` | `auto` | `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |
