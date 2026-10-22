@@ -235,9 +235,9 @@ def cmd_import(args):
             p = systemctl("start", "opt-chat")
             if p.returncode != 0:
                 print(f"could not start opt-chat: {p.stderr.strip()}", file=sys.stderr)
-            else:
-                wait_service(True)
-                print("Started opt-chat.")
+                raise SystemExit("opt-chat is stopped; start it with: systemctl --user start opt-chat")
+            wait_service(True)
+            print("Started opt-chat.")
 
 
 def main():
