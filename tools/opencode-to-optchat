@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Move an OpenCode chat into opt-chat's memory.
+
+OpenCode keeps sessions in SQLite.  This writes the user's and the assistant's
+words as the JSONL transcript opt-chat imports, then either prints the path
+(for the `import` MCP tool inside opt-chat) or imports it with
+`opt-chat -import-only`.
+
+    opencode-to-optchat list
+    opencode-to-optchat export [--session SESSION] [--out FILE]
+    opencode-to-optchat import [--session SESSION] [--yes]
+
+`export` is safe while both chats run.  `import` stops the opt-chat service
+while it writes, so use it from a terminal, not from inside opt-chat; inside
+opt-chat, call its `import` tool with the path export prints.
+"""
+
+import argparse
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+HOME = Path.home()
+DEFAULT_DB = HOME / ".local/share/opencode/opencode.db"
+DEFAULT_BIN = HOME / "Projects/opt-chat/opt-chat"
+DEFAULT_CHAT = HOME / ".opt-chat"
+DEFAULT_CACHE = HOME / ".cache/opencode-to-optchat"
+
+
+def iso(ms):
+    """A millisecond timestamp as RFC 3339, which opt-chat parses."""
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def connect(path):
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    con.execute("pragma query_only=on")
+    return con
+
+
+def session(con, sid):
+    if sid:
+        row = con.execute(
+            "select id, directory, title, time_created, time_updated from session_v2 where id = ?",
+            (sid,),
+        ).fetchone()
+        if row is None:
+            raise SystemExit(f"no OpenCode session {sid}")
+        return row
+    row = con.execute(
+        "select id, directory, title, time_created, time_updated from session_v2 order by time_updated desc limit 1"
+    ).fetchone()
+    if row is None:
+        raise SystemExit("the OpenCode database has no sessions")
+    return row
+
+
+def words(typ, data):
+    """The words of one OpenCode message, without reasoning or tool output."""
+    parts = []
+    if typ == "user":
+        parts.append(data.get("text") or "")
+        for f in data.get("files") or []:
+            if isinstance(f, dict):
+                name = f.get("filename") or f.get("name") or f.get("path")
+            else:
+                name = str(f)
+            if name:
+                parts.append(f"[file: {name}]")
+    else:
+        for item in data.get("content") or []:
+            if item.get("type") == "text":
+                parts.append(item.get("text") or "")
+    return "\n\n".join(p.strip() for p in parts if p and p.strip())
+
+
+def export(con, row, out):
+    """Write one session as the JSONL opt-chat reads.  Returns user, ai counts."""
+    sid = row["id"]
+    lines = [{
+        "type": "opencode_session",
+        "version": 1,
+        "session": sid,
+        "cwd": row["directory"],
+        "title": row["title"],
+        "timestamp": iso(row["time_created"]),
+    }]
+    users = ais = 0
+    rows = con.execute(
+        "select id, type, time_created, data from session_message "
+        "where session_id = ? and type in ('user', 'assistant') order by seq",
+        (sid,),
+    )
+    for m in rows:
+        try:
+            data = json.loads(m["data"])
+        except (TypeError, ValueError):
+            continue
+        text = words(m["type"], data)
+        if not text:
+            continue
+        created = (data.get("time") or {}).get("created") or m["time_created"]
+        lines.append({
+            "type": m["type"],
+            "timestamp": iso(created),
+            "cwd": row["directory"],
+            "uuid": m["id"],
+            "message": {"role": m["type"], "content": [{"type": "text", "text": text}]},
+        })
+        users += m["type"] == "user"
+        ais += m["type"] == "assistant"
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        for line in lines:
+            f.write(json.dumps(line, ensure_ascii=False) + "\n")
+    tmp.replace(out)
+    return users, ais
+
+
+def opt_chat_has_import_only(binary):
+    p = subprocess.run([str(binary), "-h"], text=True, capture_output=True)
+    return "-import-only" in p.stdout + p.stderr
+
+
+def systemctl(*args):
+    return subprocess.run(["systemctl", "--user", *args], text=True, capture_output=True)
+
+
+def service_active():
+    return systemctl("is-active", "--quiet", "opt-chat").returncode == 0
+
+
+def wait_service(active, timeout=20):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if service_active() == active:
+            return
+        time.sleep(0.25)
+    raise SystemExit(f"opt-chat did not become {'active' if active else 'inactive'}")
+
+
+def confirm_stop(yes):
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        raise SystemExit("opt-chat is running; pass --yes to stop it for the import")
+    answer = input("opt-chat is running. Stop it for the import and start it again? [y/N] ")
+    return answer.strip().lower() in ("y", "yes")
+
+
+def do_export(args):
+    db = Path(args.db).expanduser()
+    if not db.is_file():
+        raise SystemExit(f"no OpenCode database at {db}")
+    con = connect(db)
+    row = session(con, args.session)
+    out = Path(args.out).expanduser() if args.out else DEFAULT_CACHE / f"{row['id']}.jsonl"
+    users, ais = export(con, row, out)
+    total = users + ais
+    if total == 0:
+        raise SystemExit(f"no user or assistant words in {row['id']}")
+    print(f"Exported {total} messages ({users} user, {ais} assistant) to {out}")
+    return row, out
+
+
+def cmd_export(args):
+    do_export(args)
+
+
+def cmd_list(args):
+    db = Path(args.db).expanduser()
+    con = connect(db)
+    rows = con.execute(
+        """select s.id, s.directory, s.title, s.time_updated,
+                  sum(case when m.type = 'user' then 1 else 0 end) as users,
+                  sum(case when m.type = 'assistant' then 1 else 0 end) as ais
+           from session_v2 s
+           left join session_message m
+             on m.session_id = s.id and m.type in ('user', 'assistant')
+           group by s.id
+           order by s.time_updated desc
+           limit ?""",
+        (args.limit,),
+    ).fetchall()
+    for r in rows:
+        title = f"  {r['title']}" if r["title"] else ""
+        print(f"{r['id']}  {iso(r['time_updated'])}  {r['users']:3d} user {r['ais']:3d} ai  {r['directory']}{title}")
+
+
+def cmd_import(args):
+    binary = Path(args.binary).expanduser()
+    if not binary.is_file():
+        raise SystemExit(f"no opt-chat binary at {binary}")
+    if not opt_chat_has_import_only(binary):
+        raise SystemExit(f"{binary} has no -import-only; rebuild opt-chat first")
+
+    _, out = do_export(args)
+    if args.dry_run:
+        print(f"Would run: {binary} -import-only -import {out} -dir {Path(args.chat_dir).expanduser()}")
+        return
+
+    active = False if args.no_service else service_active()
+    if active and not confirm_stop(args.yes):
+        raise SystemExit("nothing imported")
+
+    stopped = False
+    try:
+        if active:
+            p = systemctl("stop", "opt-chat")
+            if p.returncode != 0:
+                raise SystemExit(f"could not stop opt-chat: {p.stderr.strip()}")
+            stopped = True
+            wait_service(False)
+            print("Stopped opt-chat.")
+
+        cmd = [
+            str(binary), "-import-only", "-import", str(out),
+            "-dir", str(Path(args.chat_dir).expanduser()), "-open=false",
+        ]
+        p = subprocess.run(cmd, input="y\n", text=True, capture_output=True, timeout=300)
+        sys.stdout.write(p.stdout)
+        sys.stderr.write(p.stderr)
+        if p.returncode != 0:
+            raise SystemExit(f"opt-chat import failed (exit {p.returncode})")
+    finally:
+        if stopped:
+            p = systemctl("start", "opt-chat")
+            if p.returncode != 0:
+                print(f"could not start opt-chat: {p.stderr.strip()}", file=sys.stderr)
+            else:
+                wait_service(True)
+                print("Started opt-chat.")
+
+
+def main():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--db", default=str(DEFAULT_DB), help=f"OpenCode database (default: {DEFAULT_DB})")
+    common.add_argument("--session", help="session id (default: the one updated last)")
+    common.add_argument("--out", help="where to write the transcript (default: ~/.cache/opencode-to-optchat/<id>.jsonl)")
+
+    ap = argparse.ArgumentParser(description="Move an OpenCode chat into opt-chat's memory")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("list", parents=[], help="list recent OpenCode sessions")
+    p.add_argument("--db", default=str(DEFAULT_DB), help=argparse.SUPPRESS)
+    p.add_argument("--limit", type=int, default=15, help="how many to list (default: 15)")
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("export", parents=[common], help="write a transcript for opt-chat's import tool")
+    p.set_defaults(func=cmd_export)
+
+    p = sub.add_parser("import", parents=[common], help="write a transcript and import it, stopping opt-chat if needed")
+    p.add_argument("--binary", default=str(DEFAULT_BIN), help=f"opt-chat binary (default: {DEFAULT_BIN})")
+    p.add_argument("--chat-dir", default=str(DEFAULT_CHAT), help=f"opt-chat memory directory (default: {DEFAULT_CHAT})")
+    p.add_argument("--yes", action="store_true", help="stop opt-chat without asking")
+    p.add_argument("--dry-run", action="store_true", help="export only; print the command that would run")
+    p.add_argument("--no-service", action="store_true", help="do not stop or start opt-chat")
+    p.set_defaults(func=cmd_import)
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

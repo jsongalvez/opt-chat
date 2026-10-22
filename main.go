@@ -48,6 +48,7 @@ func main() {
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
+	importOnly := flag.Bool("import-only", false, "with -import: write what it imports and exit, without starting the chat")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
 	importSkip := flag.String("import-skip", "", "skip sessions whose directory (or a chat's title) contains any of these, comma-separated")
@@ -73,6 +74,9 @@ func main() {
 	}
 	if *jobs < 1 {
 		fatal("-jobs must be 1 or more")
+	}
+	if *importOnly && *importPath == "" {
+		fatal("-import-only needs -import")
 	}
 	if *agentCap != 0 && (*agentCap < windowMin || *agentCap > windowMax) {
 		fatal("-agent-compact-max must be 0, or from %d to %d", windowMin, windowMax)
@@ -106,6 +110,9 @@ func main() {
 			return
 		case err != nil:
 			fatal("import: %v", err)
+		}
+		if *importOnly {
+			return
 		}
 	}
 	agentsMD := filepath.Join(*dir, "AGENTS.md")

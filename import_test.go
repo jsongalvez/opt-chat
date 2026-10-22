@@ -229,6 +229,41 @@ func TestImportHistory(t *testing.T) {
 	}
 }
 
+// An OpenCode chat exported as JSONL: its user and assistant words come in at
+// their dates, under a note that names OpenCode.
+func TestImportOpenCode(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "opencode.jsonl")
+	jsonl(t, file,
+		obj{"type": "opencode_session", "timestamp": "2026-09-01T10:00:00Z", "session": "oc1", "cwd": "/work"},
+		claudeLine("user", "2026-09-01T10:00:01Z", "Hello"),
+		claudeLine("assistant", "2026-09-01T10:00:02Z", []obj{
+			{"type": "reasoning", "text": "hmm"},
+			{"type": "text", "text": "Hi."},
+		}),
+	)
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	importInto(t, c, file, importOpts{}, "y\n")
+	want := []string{
+		"note: OpenCode session oc1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
+		"user: Hello",
+		"ai: Hi.",
+	}
+	if got := logged(c); !slices.Equal(got, want) {
+		t.Fatalf("logged %q\nwant %q", got, want)
+	}
+
+	// The chat goes on: the next import adds only the new words.
+	jsonl(t, file, claudeLine("assistant", "2026-09-01T10:00:03Z", "More."))
+	importInto(t, c, file, importOpts{}, "y\n")
+	rest := []string{
+		"note: OpenCode session oc1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
+		"ai: More.",
+	}
+	if got := logged(c)[len(want):]; !slices.Equal(got, rest) {
+		t.Fatalf("the rest: %q", got)
+	}
+}
+
 // Codex sessions: injected context and subagents' sessions stay out.
 func TestImportCodex(t *testing.T) {
 	home := t.TempDir()
