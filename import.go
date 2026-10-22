@@ -82,7 +82,7 @@ var (
 	// Codex's injected context: <environment_context>, AGENTS.md, ...
 	codexSkip   = regexp.MustCompile(`^(<[a-z_]+[ >]|# AGENTS\.md)`)
 	sessionFile = regexp.MustCompile(`(^|/)(projects|sessions|archived_sessions)/`)
-	sessionID   = regexp.MustCompile(`^(?:Claude Code|Codex) session (\S+?)(?: in |, from )`)
+	sessionID   = regexp.MustCompile(`^(?:Claude Code|Codex|OpenCode) session (\S+?)(?: in |, from )`)
 	// In Claude Code's history: a shell line, or a command.
 	historySkip = regexp.MustCompile(`^(!|` + slashCommand + `)`)
 	pasted      = regexp.MustCompile(`\[Pasted text #(\d+)(?: \+\d+ lines)?\]`)
@@ -219,6 +219,7 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 			Type             string `json:"type"`
 			Timestamp        string `json:"timestamp"`
 			Cwd              string `json:"cwd"`
+			Session          string `json:"session"`
 			IsMeta           bool   `json:"isMeta"`
 			IsSidechain      bool   `json:"isSidechain"`
 			IsCompactSummary bool   `json:"isCompactSummary"`
@@ -241,6 +242,19 @@ func readSessionFile(path string, keep func(*session, pastMsg) bool) (session, e
 			continue
 		}
 		date = parseDate(j.Timestamp, date)
+		if n == 0 && j.Type == "opencode_session" {
+			s.app = "OpenCode"
+			s.where = "session " + j.Session
+			if j.Session == "" {
+				s.where = "session " + id
+			}
+			if j.Cwd != "" {
+				s.where += " in " + j.Cwd
+				s.dir = j.Cwd
+			}
+			s.start = date
+			continue
+		}
 		if n == 0 && j.Type == "session_meta" {
 			s.app, s.where = "Codex", "" // until its meta says whose it is
 		}
@@ -767,6 +781,24 @@ func countN(n int) string {
 }
 
 var errDeclined = errors.New("nothing imported")
+
+// importNow imports the sessions at path without asking: the MCP import
+// tool. It returns what it added, or why it added nothing.
+func importNow(c *Chat, path string, o importOpts) (string, error) {
+	sessions, found, err := readSessions(path, keeper(c.imported(), o))
+	if err != nil {
+		return "", err
+	}
+	if found == 0 {
+		return "", fmt.Errorf("no chats in %s", path)
+	}
+	if len(sessions) == 0 {
+		return fmt.Sprintf("Nothing new in the %s found: all in the chat already, older than -import-since, or skipped.", count(found, "session")), nil
+	}
+	plan := importPlan(c, sessions)
+	c.logSessions(sessions, io.Discard)
+	return plan + "\nImported.", nil
+}
 
 // importChats imports the chats at path, or a text file's lines as notes,
 // after saying what that adds and asking: the log is append-only.
