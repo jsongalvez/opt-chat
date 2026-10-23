@@ -62,6 +62,7 @@ func main() {
 	evalPath := flag.String("eval", "", "ask this file's questions (JSON lines with \"q\") about the chat as side questions, write the answers to -eval-out, and quit")
 	evalOut := flag.String("eval-out", "answers.jsonl", "where -eval writes its answers")
 	evalPar := flag.Int("eval-par", 4, "questions -eval asks at once")
+	expRelay := flag.Bool("experimental-relay", false, "experimental: route calls through a loopback relay that marks the view's first part for the cache itself, saving the extra \"ok\" request each call spends on it (see relay.go)")
 	flag.Parse()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
@@ -133,6 +134,12 @@ func main() {
 		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
+	if *expRelay {
+		// OPT_CHAT_RELAY_TRACE: a file for each request's shape, never its text.
+		if a.relay, err = startRelay("https://api.anthropic.com", os.Getenv("OPT_CHAT_RELAY_TRACE")); err != nil {
+			warn("-experimental-relay is off: %v", err)
+		}
+	}
 	h.agent = a
 	if *hideEmail {
 		if a.noEmail, err = writeEmailPlugin(*dir); err != nil {
