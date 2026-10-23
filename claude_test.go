@@ -207,7 +207,11 @@ func fakeClaude() {
 		switch {
 		case strings.HasSuffix(text, viewGoesOn):
 			if strings.Contains(text, "slow-ack") {
-				time.Sleep(300 * time.Millisecond)
+				select {
+				case <-time.After(300 * time.Millisecond):
+				case <-stop: // as Claude Code, which exits on SIGTERM
+					return
+				}
 			}
 			result("ok")
 		case strings.Contains(in, "turn-hit-limit") || strings.Contains(in, "agent-hit-limit"): // the plan's limit, once, resetting in a second or two
