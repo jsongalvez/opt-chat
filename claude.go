@@ -38,6 +38,7 @@ type Agent struct {
 	cmodel, ceffort string // compactions
 	cnice           int    // compactions run under nice -n this (0: as turns)
 	cbare           bool   // compactions on another model than turns list no tools
+	ccopied         bool   // ask again for a line with tokens from <chat> its input lacks (-compact-copied)
 	relay           *relay // -experimental-relay: see relay.go; nil: off
 	perm, cwd       string
 	tools           string
@@ -898,7 +899,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 		return "", err
 	}
 	p.send(rest...)
-	best, acks, listed := "", 0, false
+	best, acks, listed, copied := "", 0, false, false
 	for try := 1; ; {
 		e, ok := p.next()
 		if !ok && best != "" {
@@ -940,6 +941,15 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 				"from <chat>. Write the whole line again for the same <input>, without them."))
 			continue
 		}
+		if a.ccopied && !copied {
+			if toks := fromContext(line, blocksText(task), lines); len(toks) > 0 {
+				copied = true
+				p.send(textBlock("Your line holds " + strings.Join(toks, ", ") + ": <chat> has them, <input> doesn't.\n" +
+					"Write the whole line again for the same <input>. Keep one only where it names what\n" +
+					"<input> itself refers to; drop the facts about it that <input> doesn't state."))
+				continue
+			}
+		}
 		if best == "" || len(line) < len(best) {
 			best = line
 		}
@@ -952,6 +962,22 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 			"the whole line again for the same <input>, cutting just enough of the\n"+
 			"least valuable items to fit before this cut:\n%s| ← LIMIT", len(line), head(line, nodeMax))))
 	}
+}
+
+// token is what a line copies from its context exactly: a commit, a number,
+// a file name.
+var token = regexp.MustCompile(`\b[0-9a-f]{7,40}\b|\b\d{3,}\b|[\w-]+\.(?:go|kt|ts|js|py|md|java|svelte|yml|yaml|json|sh|sql)(?::\d+)?`)
+
+// fromContext is the tokens of line that ctx holds and input doesn't.
+func fromContext(line, input string, ctx []string) []string {
+	all := strings.Join(ctx, "\n")
+	var out []string
+	for _, t := range token.FindAllString(line, -1) {
+		if !strings.Contains(input, t) && strings.Contains(all, t) && !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // owedHead is the head of a list of owed or open items, which summaries

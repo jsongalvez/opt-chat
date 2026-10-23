@@ -243,6 +243,10 @@ func fakeClaude() {
 			result("the line at last")
 		case strings.Contains(in, "lists owed or open items that <input> doesn't hold"):
 			result("tool: ran it")
+		case strings.Contains(in, "<chat> has them, <input> doesn't"):
+			result("tool: pushed")
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "copies-commit"):
+			result("tool: pushed; CI for deadbeef1 red")
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "adds-owed"):
 			result("tool: ran it. Owed: a thing from the chat")
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "answers-ok"):
@@ -580,6 +584,23 @@ func TestCompact(t *testing.T) {
 	if err != nil || got != "tool: ran it. Owed: a thing from the chat" {
 		t.Fatalf("an owed list in the input was dropped: %q, %v", got, err)
 	}
+	// A commit its context names and its input lacks: asked again, with
+	// -compact-copied; kept without it, and when its input names it.
+	ctxc := []string{"1+1|tool: CI for deadbeef1 red"}
+	a.ccopied = true
+	got, err = a.Compact(context.Background(), ctxc, 1, []block{textBlock("Compaction: copies-commit")})
+	if err != nil || got != "tool: pushed" {
+		t.Fatalf("a commit from the context was kept: %q, %v", got, err)
+	}
+	got, err = a.Compact(context.Background(), ctxc, 1, []block{textBlock("Compaction: copies-commit deadbeef1")})
+	if err != nil || got != "tool: pushed; CI for deadbeef1 red" {
+		t.Fatalf("a commit in the input was dropped: %q, %v", got, err)
+	}
+	a.ccopied = false
+	got, err = a.Compact(context.Background(), ctxc, 1, []block{textBlock("Compaction: copies-commit")})
+	if err != nil || got != "tool: pushed; CI for deadbeef1 red" {
+		t.Fatalf("-compact-copied=false asked again: %q, %v", got, err)
+	}
 	// On another model than turns, with -compact-bare, it lists no tools:
 	// Claude Code's reminders for them named its model in commits.
 	a.cbare = true
@@ -591,7 +612,7 @@ func TestCompact(t *testing.T) {
 		t.Fatalf("bare compaction args: %q", args)
 	}
 	a.cbare = false
-	if n, u := a.takeCompactions(); n != 9 || u.Read == 0 {
+	if n, u := a.takeCompactions(); n != 12 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }

@@ -70,6 +70,7 @@ cache over.
 | `-compact-model`, `-compact-effort` | `sonnet`, `medium` | for summaries (the recipe's: `haiku`) |
 | `-compact-nice` | `10` | summaries' CPU priority under `nice` (`0`: off) |
 | `-compact-bare` | on | summaries on another model than turns list no tools, so Claude Code's tool reminders stay out of them |
+| `-compact-copied` | on | ask a summary again when it copies a commit, long number or file name from its context |
 | `-permission-mode` | `auto` | `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |

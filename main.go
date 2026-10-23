@@ -39,6 +39,7 @@ func main() {
 	cmodel := flag.String("compact-model", "sonnet", "model for compactions (the recipe's: haiku)")
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
+	ccopied := flag.Bool("compact-copied", true, "ask a compaction again, once, when its line holds a commit, a long number or a file name that its context has and its input doesn't")
 	cbare := flag.Bool("compact-bare", true, "compactions on another model than turns list no tools: they share no cache with turns, and Claude Code adds tool reminders, such as a commit attribution naming the compaction's model, that summaries took for the chat's")
 	cnice := flag.Int("compact-nice", 10, "run compactions under nice -n this, so turns keep the CPU on a busy machine (0: off)")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
@@ -135,7 +136,7 @@ func main() {
 	}
 	h := &harness{}
 	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake, *owed), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, ccopied: *ccopied, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	if *expRelay {
