@@ -37,6 +37,7 @@ type Agent struct {
 	amodel, aeffort string // subagents
 	cmodel, ceffort string // compactions
 	cnice           int    // compactions run under nice -n this (0: as turns)
+	relay           *relay // -experimental-relay: see relay.go; nil: off
 	perm, cwd       string
 	tools           string
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
@@ -304,6 +305,9 @@ type proc struct {
 	callSeq  int
 	calls    map[string]chan controlReply // our control requests, waiting for answers
 	callsEnd error                        // set once its output has ended
+
+	lead  []block    // with the relay, the view's first message, sent with the next one (ack)
+	begun func(bool) // with the relay, told once whether its response began (true) or its output ended first
 }
 
 type role int
@@ -507,6 +511,9 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
+	if a.relay != nil {
+		cmd.Env = append(cmd.Env, "ANTHROPIC_BASE_URL="+a.relay.base)
+	}
 	if own {
 		// Tool search always: left to decide, Claude Code defers MCP tools or
 		// not by which servers have connected by each request, so the ack and
@@ -644,7 +651,8 @@ func (p *proc) send(content ...block) bool {
 	if p.stdin == nil {
 		return false
 	}
-	content = slices.DeleteFunc(slices.Clone(content), func(b block) bool { return b.Type == "text" && b.Text == "" })
+	content = slices.DeleteFunc(slices.Concat(p.lead, content), func(b block) bool { return b.Type == "text" && b.Text == "" })
+	p.lead = nil
 	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
 	_, err := p.stdin.Write(append(b, '\n'))
 	return err == nil
@@ -664,6 +672,9 @@ func (p *proc) next() (event, bool) {
 		var e event
 		if json.Unmarshal(p.out.Bytes(), &e) != nil {
 			continue
+		}
+		if p.begun != nil && (e.Type == "stream_event" || e.Type == "assistant") {
+			p.begun(true)
 		}
 		if e.Type == "control_response" { // to its request; returned too, for callNow
 			p.answered(e.Response)
@@ -688,6 +699,9 @@ func (p *proc) next() (event, bool) {
 		}
 		return e, true
 	}
+	if p.begun != nil {
+		p.begun(false)
+	}
 	p.endCalls()
 	return event{}, false
 }
@@ -695,6 +709,9 @@ func (p *proc) next() (event, bool) {
 // wait ends the call and gives its error; called as often as convenient.
 func (p *proc) wait() error {
 	p.ended.Do(func() {
+		if p.begun != nil { // ended before reading its output: the calls waiting on its first message go
+			p.begun(false)
+		}
 		p.close()
 		if err := p.cmd.Wait(); err != nil {
 			p.err = err
@@ -790,7 +807,7 @@ func viewCut(lines []string, stable, every int) int {
 // for one or two calls. TestCacheReplay measures it.
 func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, stable int, task []block) (first, rest []block) {
 	first, rest = splitView(lines, stable, ccheckpoint, task)
-	if first == nil || len(rest) > 16 { // the blocks after it, past the API's lookback
+	if first == nil || (len(rest) > 16 && a.relay == nil) { // the blocks after it, past the API's lookback; the relay's mark needs none
 		return first, rest
 	}
 	cut := viewCut(lines, stable, ccheckpoint)
@@ -800,6 +817,9 @@ func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, 
 		}
 		if key := prefix + "\x00" + f[0].Text; a.inCache(ctx, key) {
 			a.noteCached(key)
+			if a.relay != nil { // ack sends it with the rest, marked
+				return f, r
+			}
 			return nil, slices.Concat(f, []block{textBlock(viewHere)}, r)
 		}
 	}
@@ -816,6 +836,24 @@ func (a *Agent) ack(p *proc, first []block, u *usage, each func(event)) error {
 		return nil
 	}
 	key := p.prefix + "\x00" + first[0].Text
+	if a.relay != nil {
+		// Nothing sent: the first message goes with the next, its text
+		// ending with the relay's mark, and the cache holds it once the
+		// response to that begins.
+		release := a.writeOnce(p.ctx, key)
+		lead := slices.Clone(first)
+		lead[0] = textBlock(strings.TrimSuffix(lead[0].Text, viewGoesOn) + relayMark)
+		p.mu.Lock()
+		p.lead = lead
+		p.mu.Unlock()
+		p.begun = onceBool(func(began bool) {
+			if began {
+				a.noteCached(key)
+			}
+			release()
+		})
+		return nil
+	}
 	release := sync.OnceFunc(a.writeOnce(p.ctx, key))
 	defer release()
 	began := sync.OnceFunc(func() { a.noteCached(key); release() })
@@ -1337,3 +1375,9 @@ func lastLine(s string) string {
 }
 
 func dim(s string) { fmt.Fprintf(os.Stdout, "\x1b[2m%s\x1b[0m\n", s) }
+
+// onceBool is sync.OnceFunc for a func of a bool.
+func onceBool(f func(bool)) func(bool) {
+	var once sync.Once
+	return func(v bool) { once.Do(func() { f(v) }) }
+}
