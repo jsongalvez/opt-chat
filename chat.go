@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"math/bits"
 	"net/http"
@@ -524,27 +525,52 @@ func (c *Chat) markAcks() {
 }
 
 // markMatching marks for redo each message's line that matches re while its
-// message doesn't, so the line holds what its message lacks, and every line
-// built on it: a claim a compaction added, which later lines copied (see
-// docs/2026-10-23-faithful-lines.md). It returns how many it marked.
+// message doesn't, so the line holds what its message lacks, and each line
+// built on it that matches re too: a claim a compaction added, which later
+// lines copied (see docs/2026-10-23-faithful-lines.md). A line built on one
+// that doesn't match holds nothing bad, and keeps its text: a mark an
+// earlier run left on it is dropped. The marked lines are queued at once:
+// the start's enqueueMissing ran before. It returns how many it marked.
 func (c *Chat) markMatching(re *regexp.Regexp) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var marks []any
+	want := map[key]bool{}
 	for i, m := range c.msgs {
 		k := key{0, i}
 		if !c.built(k) || !re.MatchString(c.tree[k]) || re.MatchString(m.Text) {
 			continue
 		}
-		for p := k; c.built(p) && !c.redo[p]; p = p.parent() {
+		want[k] = true
+		for p := k.parent(); c.built(p) && !want[p]; p = p.parent() {
+			if re.MatchString(c.tree[p]) {
+				want[p] = true
+			}
+		}
+	}
+	var marks []any
+	node := func(p key, redo bool) Node {
+		return Node{L: p.L, I: p.I, Text: c.tree[p], Size: len(c.tree[p]), Redo: redo}
+	}
+	for p := range c.redo {
+		if !want[p] && !c.busy[p] {
+			delete(c.redo, p)
+			marks = append(marks, node(p, false))
+		}
+	}
+	keys := slices.SortedFunc(maps.Keys(want), func(a, b key) int { return cmp.Or(cmp.Compare(a.L, b.L), cmp.Compare(a.I, b.I)) })
+	for _, p := range keys {
+		if !c.redo[p] {
 			c.redo[p] = true
-			marks = append(marks, Node{L: p.L, I: p.I, Text: c.tree[p], Size: len(c.tree[p]), Redo: true})
+			marks = append(marks, node(p, true))
 		}
 	}
 	if len(marks) > 0 {
 		c.appendDay("tree", marks...)
 	}
-	return len(marks)
+	for _, p := range keys { // halves first: a line waits for its halves' redo
+		c.need(p)
+	}
+	return len(keys)
 }
 
 // need queues node k, or builds it at once when it is free. A line to

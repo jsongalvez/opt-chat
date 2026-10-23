@@ -1063,10 +1063,19 @@ func TestMarkMatching(t *testing.T) {
 	}
 	c.setNode(key{0, 1}, "commit 1, should be Brand X")
 	c.setNode(key{0, 3}, "commit 3, should be Brand X")
+	c.setNode(key{1, 0}, "commits 0-1, should be Brand X") // copied it: marked
+	// 2+0 stays "line 2+0": built on a bad line, but holds nothing bad
+	c.redo[key{2, 0}] = true // a mark from an earlier run, dropped
 	c.flushNodes()
 	c.mu.Unlock()
-	if n := c.markMatching(regexp.MustCompile(`Brand X`)); n != 3 {
-		t.Fatalf("marked %d, want 3: 0+1, 0+2, 0+4", n)
+	if n := c.markMatching(regexp.MustCompile(`Brand X`)); n != 2 {
+		t.Fatalf("marked %d, want 2: 0+1, 1+0", n)
+	}
+	c.mu.Lock()
+	queued := c.queued[key{0, 1}]
+	c.mu.Unlock()
+	if !queued {
+		t.Fatal("0+1 not queued: it would wait for the next start")
 	}
 	c.lock.Close() // as at a restart
 	again, err := openChat(dir)
@@ -1074,7 +1083,7 @@ func TestMarkMatching(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := slices.SortedFunc(maps.Keys(again.redo), func(a, b key) int { return cmp.Compare(a.L*100+a.I, b.L*100+b.I) })
-	if want := []key{{0, 1}, {1, 0}, {2, 0}}; !slices.Equal(got, want) {
+	if want := []key{{0, 1}, {1, 0}}; !slices.Equal(got, want) {
 		t.Fatalf("after a restart, to redo: %v, want %v", got, want)
 	}
 }
