@@ -781,7 +781,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		second = msg
 	default:
 		var first []block
-		first, second = viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
+		first, second = a.viewMessages(lines, []block{textBlock(fmt.Sprintf("You are subagent [%s]. Your task:\n%s", name, task))})
 		if err := a.ack(p, first, &u, each); err != nil {
 			p.wait()
 			report(failed(err))
