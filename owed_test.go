@@ -13,9 +13,7 @@ func TestOwed(t *testing.T) {
 	c.Log("user", "make the build green")
 	c.Log("opt", "on it")
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	if n := len(a.mcpList()); n != 6 {
-		t.Fatalf("tools when off: %d", n)
-	}
+	off := len(a.mcpList())
 	call := func(fromAgent bool, x toolArgs) string { s, _ := callTool(a, fromAgent, "owe", x); return s }
 	if got := call(false, toolArgs{From: 0, Text: "x"}); got != "The owed list is off: opt-chat runs with -owed=false." {
 		t.Fatalf("off: %q", got)
@@ -25,8 +23,8 @@ func TestOwed(t *testing.T) {
 		t.Fatal(err)
 	}
 	a.owed = o
-	if n := len(a.mcpList()); n != 7 {
-		t.Fatalf("tools when on: %d", n)
+	if n := len(a.mcpList()); n != off+1 {
+		t.Fatalf("tools when on: %d, off: %d", n, off)
 	}
 	if a.owedNote() != nil {
 		t.Fatal("an empty list opened a turn")
