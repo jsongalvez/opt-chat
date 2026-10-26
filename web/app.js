@@ -657,6 +657,8 @@ const commands = [
   ['/find', 'find words in the whole chat, and show the message where it is (⌘/Ctrl+F)'],
   ['/view', 'the chat as Opt sees it, its view, each line opening into its halves; again: the log (Alt+V)'],
   ['/tree', 'the whole memory, every level of the tree, in a new tab'],
+  ['/owed', 'what Opt owes you, each item citing your message that asked for it'],
+  ['/done', 'close an owed item, as /done 3'],
   ['/help', 'list the commands'],
 ];
 

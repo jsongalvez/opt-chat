@@ -75,7 +75,7 @@ cache over.
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |
 | `-claude-md`, `-wake` | on | the CLAUDE.md files of the folders Opt works in; wake-ups |
-| `-owed` | on | Opt's owed list, outside memory: each item cites your message; only you close one (`/owed`, `/done N`) |
+| `-owed` | on | Opt's owed list, outside memory: each item cites your message; you close one (`/owed`, `/done N`), or Opt does once you confirm it; items are mine, waiting or parked |
 | `-redo` | | at start, rebuild the lines that match a regexp their message doesn't: claims a summary added |
 | `-resume-at-reset` | on | at the plan's usage-limit reset, start a turn and resume the subagents it stopped (`-reset-grace`, 90s) |
 | `-auto-resume` | on | resume a cut-off turn and subagents at start |

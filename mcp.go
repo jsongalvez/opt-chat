@@ -96,8 +96,10 @@ var (
 			schema([]string{"name", "message"}, map[string]any{"name": str, "message": str})),
 	}
 	oweTool = tool("owe", "Add to your owed list a thing the user asked for in message from (a user's message) and you haven't done. "+
-		"Each turn opens with the list; only the user closes an item, with /done. With neither from nor text, it lists the items.",
-		schema(nil, map[string]any{"from": num, "text": str}))
+		"item and state: set an item's state, mine (yours to do), waiting (on the user) or parked (put off by the user). "+
+		"close and from: close an item once the user's message from confirms it done; ask the user first. "+
+		"The user closes one with /done. Each turn opens with the list. With no argument, it lists the items.",
+		schema(nil, map[string]any{"from": num, "text": str, "item": num, "state": map[string]any{"type": "string", "enum": owedStates}, "close": num}))
 	wakeTool = tool("wake", "Set a message to yourself, at a time: then opt-chat starts a turn with \""+wakeFrame+"<time>: <message>\", as a report does. "+
 		"Kept across restarts; one missed while opt-chat was down comes once as it starts. "+
 		"at: a duration from now (90m, 2h), a time (21:30: today, or tomorrow once passed) or a date and time (2026-10-20 09:00), local. "+
@@ -191,6 +193,9 @@ type toolArgs struct {
 	Cancel  int            `json:"cancel"`
 	Path    string         `json:"path"`
 	From    int            `json:"from"`
+	Item    int            `json:"item"`
+	State   string         `json:"state"`
+	Close   int            `json:"close"`
 }
 
 // callTool runs one tool and returns its text and the images that go with it.
