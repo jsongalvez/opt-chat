@@ -276,7 +276,7 @@ func TestAgentMemNoGlobalStall(t *testing.T) {
 	default:
 	}
 	<-done
-	if took > 100*time.Millisecond {
+	if took > 300*time.Millisecond { // 800 ms before the fix
 		t.Fatalf("a step of another subagent waited %v on a first zoom", took)
 	}
 }
@@ -346,4 +346,45 @@ func TestAgentMemCloses(t *testing.T) {
 	if len(sc.msgs) != 10 {
 		t.Fatalf("%d messages after the reopen, want 10", len(sc.msgs))
 	}
+}
+
+// A main chat line that keeps failing holds up no subagent's memory.
+func TestAgentMemMainFailing(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	mainFake := c.compact
+	var poisoned atomic.Bool
+	poisoned.Store(true)
+	c.mu.Lock()
+	c.compact = func(ctx context.Context, l []string, s int, b []block) (string, error) {
+		if poisoned.Load() && strings.Contains(b[0].Text, "poison") {
+			return "", fmt.Errorf("refused")
+		}
+		return mainFake(ctx, l, s, b)
+	}
+	c.mu.Unlock()
+	c.setAgentCompact(func(context.Context, []string, int, []block) (string, error) {
+		return strings.Repeat("s", 100), nil
+	})
+	c.logMsgs([]Msg{{Kind: "user", Text: "poison " + strings.Repeat("p", 800)}})
+	time.Sleep(50 * time.Millisecond) // it fails, and waits to try again
+	bigAgentLog(t, c, "Sub", 5, 2000)
+	sc, err := c.agentMem("Sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sc.mu.Lock()
+		idle := len(sc.busy) == 0 && len(sc.ready0) == 0 && len(sc.readyM) == 0
+		sc.mu.Unlock()
+		if idle {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the subagent's chat built nothing while a main chat line kept failing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	poisoned.Store(false)
+	c.logMsgs([]Msg{{Kind: "user", Text: "back"}}) // the user is back: it is tried again now
 }

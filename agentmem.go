@@ -56,6 +56,33 @@ type agentMem struct {
 	gone bool         // closed and out of the map: take the name's entry again
 }
 
+// subChat is what sets a subagent's chat apart from the main one: its
+// name, the main chat's hub for its warnings (its messages are not the
+// page's), and the gate its compactions share.
+type subChat struct {
+	name string
+	hub  *hub
+	gate *jobGate
+}
+
+// page is the hub a chat's warnings go to, main its own.
+func (s *subChat) page(main *hub) *hub {
+	if s == nil {
+		return main
+	}
+	return s.hub
+}
+
+// warnPage puts a compaction's warning on the page; a subagent's chat's
+// names it.
+func (c *Chat) warnPage(f string, a ...any) {
+	s := fmt.Sprintf(f, a...)
+	if c.sub != nil {
+		s = fmt.Sprintf("[%s] memory: %s", c.sub.name, s)
+	}
+	c.sub.page(c.hub).notice("warn", "%s", s)
+}
+
 // jobGate shares -agent-jobs compactions among all subagents' chats, and
 // opens none while the main chat has a line waiting to be built: the main
 // chat's come first. Its mu is taken last, under a Chat.mu.
@@ -191,7 +218,7 @@ func (c *Chat) agentFed(name string, am *agentMem) (*Chat, error) {
 		if err != nil {
 			return nil, err
 		}
-		sc.who, sc.alerts, sc.gate = name, c.hub, &m.gate
+		sc.sub = &subChat{name: name, hub: c.hub, gate: &m.gate}
 		sc.view.lo, sc.view.hi = agentViewLo, agentViewHi
 		sc.mu.Lock()
 		sc.view.check(sc)

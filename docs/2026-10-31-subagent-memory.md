@@ -62,7 +62,8 @@ sent it). A failed one shows on the page as the chat's do, named
 
 All subagents' chats share `-agent-jobs` compactions at once (2), and
 start none while the main chat has a line waiting to be built: the main
-chat's come first. `tools/agent-mem-estimate LOG...` counts a log's
+chat's come first. A main chat line that keeps failing, waiting to be
+tried again, holds up none of them. `tools/agent-mem-estimate LOG...` counts a log's
 messages and the compactions its tree takes. On real logs: about 1.1 to
 1.3 compactions per message, so a 500 KB log takes about 540
 compactions, about $0.43 at a Haiku compaction's average of $0.0008, and
