@@ -32,26 +32,43 @@ flowchart LR
 
 ## How it is fed
 
-The log stays the source. After each step is written, the subagent's
-chat reads the log from where it last stopped and logs the whole entries
-it finds, leaving out thinking. Opened again (after a restart, or a crash
-between the log and the chat), it skips as many steps as it holds,
-counted as its messages' first parts: each step goes in once.
+The log stays the source. Each subagent has a lock of its own, held over
+a step's write to the log and the feed that follows it, and over a zoom's
+feed: a feed reads the log from where it last stopped and logs the whole
+entries it finds, leaving out thinking, and never reads a step half
+written. (Without the lock, a zoom during a long write could cut a step
+at a blank line in its text, and the rest of it was lost.) Opened again
+(after a restart, or a crash between the log and the chat), a chat skips
+as many steps as it holds, counted as its messages' first parts: each
+step goes in once.
+
+No lock is shared by all subagents over a file read or write: a first
+zoom of one long log holds up no other subagent's steps.
 
 A running subagent's chat is opened at its first step and built as it
 works. A subagent from before this change gets its tree at its first
-zoom: the zoom answers at once, its lines not built yet showing their
-heads, as the main chat's do behind a backlog, and the rest is built in
-the background.
+zoom. The zoom answers at once: a line not summarized yet shows the heads
+of its first and last messages, so the first view already holds the
+task, the last report and where the work went, and the rest is built in
+the background. At most 32 subagents' chats stay open; past that the
+least used idle ones close and open again from their files when needed.
+
+A compaction in a subagent's chat is told whose chat it is and what its
+kinds mean (`tool` there is the subagent's own call, `opt` a message Opt
+sent it). A failed one shows on the page as the chat's do, named
+`[Name] memory:`.
 
 ## Cost
 
-Each subagent's chat runs at most `-agent-jobs` compactions at once (2),
-so the main chat's come first. `tools/agent-mem-estimate LOG...` counts a
-log's messages and the compactions its tree takes. On real logs:
-about 1.1 to 1.3 compactions per message, so a 500 KB log takes about
-540 compactions, about $0.43 at a Haiku compaction's average of $0.0008,
-and about 25 minutes at 2 at once. A 1.4 MB log takes about 1,600.
+All subagents' chats share `-agent-jobs` compactions at once (2), and
+start none while the main chat has a line waiting to be built: the main
+chat's come first. `tools/agent-mem-estimate LOG...` counts a log's
+messages and the compactions its tree takes. On real logs: about 1.1 to
+1.3 compactions per message, so a 500 KB log takes about 540
+compactions, about $0.43 at a Haiku compaction's average of $0.0008, and
+about 25 minutes at 2 at once. A 1.4 MB log takes about 1,600. A running
+subagent's chat costs this as it works, whether or not it is ever
+zoomed: about 1.2 compactions per step.
 
 ## Prior art
 

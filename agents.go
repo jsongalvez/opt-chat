@@ -365,10 +365,9 @@ func (a *Agent) agentWrite(name, kind, text string) { a.agentWriteRef(name, kind
 // and, on a tool call and its echo, the call's id: see stepHead.
 func (a *Agent) agentWriteRef(name, kind, text, ref string) {
 	s := step{Kind: kind, Text: text, At: nowMs(), Ref: ref}
-	if err := appendRaw(a.agentLog(name), []byte(stepHead(s)+text+"\n\n")); err != nil {
+	if err := a.chat.agentAppend(name, a.agentLog(name), []byte(stepHead(s)+text+"\n\n")); err != nil {
 		warn("[%s] log: %v", name, err)
 	}
-	a.chat.agentStepped(name)
 	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: s})
 }
 

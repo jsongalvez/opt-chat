@@ -117,6 +117,12 @@ type Chat struct {
 	// again at quit.
 	compact compactor
 	mems    *agentMems // the subagents' chats: their own lock, see agentmem.go
+	// A subagent's chat: who it is, the hub its failures go to (its own is
+	// nil: its messages are not the page's), and the gate its compactions
+	// share with the other subagents'. Empty and nil in the main chat.
+	who    string
+	alerts *hub
+	gate   *jobGate
 }
 
 func openChat(dir string) (*Chat, error) {
@@ -138,8 +144,9 @@ func openChat(dir string) (*Chat, error) {
 		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
-		mems: &agentMems{jobs: defaultAgentJobs},
+		mems: &agentMems{gate: jobGate{max: defaultAgentJobs}},
 	}
+	c.mems.gate.kick = c.pumpAgents
 	// By id, not by file: a day file is named by the clock, which can go back.
 	var msgs []Msg
 	if err := load(filepath.Join(dir, "main"), func(m Msg) { msgs = append(msgs, m) }); err != nil {
@@ -738,13 +745,32 @@ func (c *Chat) pick(side int, redo bool) (key, bool) {
 func (c *Chat) pump() {
 	for c.compact != nil && len(c.busy) < c.jobs { // nil: before the chat starts, or quitting
 		k, ok := c.next()
-		if !ok {
-			return
+		if !ok || c.gate != nil && !c.gate.take() {
+			break
 		}
 		c.busy[k] = true
 		ctxLines, stable, task := c.compactInput(k)
 		go c.build(k, c.compact, ctxLines, stable, task)
 	}
+	if c.gate == nil {
+		c.mems.gate.setMain(c.compact != nil && c.waiting())
+	}
+}
+
+// waiting is whether a line is ready to build and not being built: the
+// subagents' chats wait for it.
+func (c *Chat) waiting() bool {
+	return slices.ContainsFunc(c.ready0, func(i int) bool { return !c.busy[key{0, i}] }) ||
+		slices.ContainsFunc(c.readyM, func(k key) bool { return !c.busy[k] })
+}
+
+// notice is a compaction's warning on the page; a subagent's chat's names it.
+func (c *Chat) notice(f string, a ...any) {
+	if c.who != "" {
+		c.alerts.notice("warn", "[%s] memory: %s", c.who, fmt.Sprintf(f, a...))
+		return
+	}
+	c.hub.notice("warn", f, a...)
 }
 
 // compactor builds one line with a model from its context (the first stable
@@ -758,6 +784,9 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.busy, k)
+	if c.gate != nil {
+		c.gate.give()
+	}
 	if err != nil && c.compact == nil {
 		return // quitting: the next run builds it
 	}
@@ -766,7 +795,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		if f == nil {
 			f = &failure{}
 			c.failing[k] = f
-			c.hub.notice("warn", "compaction %s failed, trying again later: %v", k.name(), err)
+			c.notice("compaction %s failed, trying again later: %v", k.name(), err)
 		}
 		if f.n > 0 && c.written > f.at {
 			f.strikes++
@@ -786,8 +815,12 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 			return
 		}
 		// It fails while other lines get built: its source, cut, stands in.
-		c.hub.notice("warn", "compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err)
-		c.hub.sound(soundError)
+		c.notice("compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err)
+		if c.who != "" {
+			c.alerts.sound(soundError)
+		} else {
+			c.hub.sound(soundError)
+		}
 		text = c.fallback(k)
 	} else {
 		c.written++
@@ -854,7 +887,7 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 	if k.L == 0 {
 		m := c.msgs[k.I]
 		in := fmt.Sprintf("Compaction: compress message %d into one line of at most 512 bytes\n"+
-			"(about 70 words), the length of this ruler:\n%s\n%s<input>\n%s: %s\n", k.I, ruler, c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
+			"(about 70 words), the length of this ruler:\n%s\n%s%s<input>\n%s: %s\n", k.I, ruler, c.whose(), c.callBlock(k.I), m.Kind, ownTags.Replace(m.Text))
 		if f := c.failing[k]; len(m.Images) > 0 && f != nil && f.strikes >= giveUp/2 { // they may be what fails
 			return ctx, stable, []block{textBlock(in + fmt.Sprintf("[%d attached, which could not be read]\n</input>", len(m.Images)))}
 		}
@@ -867,8 +900,19 @@ func (c *Chat) compactInput(k key) ([]string, int, []block) {
 	return ctx, stable, []block{textBlock(fmt.Sprintf("Compaction: merge lines %s and %s, adjacent, into one line of at most\n"+
 		"512 bytes (about 70 words), the length of this ruler:\n%s\n"+
 		"<chat> may hold their messages, %d to %d, in more detail: take details\nof them from there too.\n"+
-		"<input>\n%s\n%s\n</input>",
-		a.name(), b.name(), ruler, k.start(), k.end()-1, c.line(a), c.line(b)))}
+		"%s<input>\n%s\n%s\n</input>",
+		a.name(), b.name(), ruler, k.start(), k.end()-1, c.whose(), c.line(a), c.line(b)))}
+}
+
+// whose tells a compaction in a subagent's chat whose chat it is: its
+// kinds are not the main chat's.
+func (c *Chat) whose() string {
+	if c.who == "" {
+		return ""
+	}
+	return fmt.Sprintf("This is subagent [%s]'s own chat, not the main one. Its kinds: task, its task; "+
+		"on, its model; agent, its replies; tool and echo, its own tool calls and their results; "+
+		"opt and user, messages Opt or the user sent it; cut, compacted and loop, opt-chat's notes.\n", c.who)
 }
 
 // compactContext is the compactions' view's lines up to node k.
@@ -1072,18 +1116,31 @@ func (c *Chat) callKeys() []key {
 // callLine is line k as a call sees it: a message not summarized yet shows
 // its head, up to nodeMax bytes.
 func (c *Chat) callLine(k key) string {
-	if k.L > 0 || c.built(k) {
+	if c.built(k) || k.L > 0 && c.who == "" {
 		return c.line(k)
 	}
-	m := c.msgs[k.I]
+	if k.L > 0 { // a subagent's: its first and last messages' heads, as its first zoom often finds none built
+		last := min(k.end(), len(c.msgs)) - 1
+		return fmt.Sprintf("%s|%s … %s %s", k.name(), c.msgHead(k.start(), mergedHead), c.msgHead(last, mergedHead), unbuilt)
+	}
+	return fmt.Sprintf("%s|%s %s", k.name(), c.msgHead(k.I, nodeMax), unbuilt)
+}
+
+// mergedHead is how much of each of its two messages a merged line not
+// summarized yet shows.
+const mergedHead = 120
+
+// msgHead is message i as "kind: text", cut to n bytes.
+func (c *Chat) msgHead(i, n int) string {
+	m := c.msgs[i]
 	text := flat(m.Text)
-	if cut := head(text, nodeMax); cut != text {
+	if cut := head(text, n); cut != text {
 		text = cut + "…"
 	}
 	if n := len(m.Images); n > 0 {
 		text += fmt.Sprintf(" [%d attached]", n)
 	}
-	return fmt.Sprintf("%s|%s: %s %s", k.name(), m.Kind, text, unbuilt)
+	return m.Kind + ": " + text
 }
 
 // Zoom opens line id+n into its two halves; n = 1 gives the message whole,
