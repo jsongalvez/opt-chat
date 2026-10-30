@@ -368,6 +368,7 @@ func (a *Agent) agentWriteRef(name, kind, text, ref string) {
 	if err := appendRaw(a.agentLog(name), []byte(stepHead(s)+text+"\n\n")); err != nil {
 		warn("[%s] log: %v", name, err)
 	}
+	a.chat.agentStepped(name)
 	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: s})
 }
 
@@ -991,14 +992,3 @@ const compactAsk = "/compact Keep what is needed to go on with your task: what w
 
 // goOn sets a subagent compacted mid-task to work again.
 const goOn = "It was compacted in the middle of the task, between two steps: go on with it where you left off."
-
-// ZoomAgent gives a subagent's whole chat, its steps' times and ids left
-// out.
-func (c *Chat) ZoomAgent(name string) string {
-	name = agentName(name)
-	b, err := os.ReadFile(filepath.Join(c.dir, "agents", name+".log"))
-	if name == "" || err != nil {
-		return fmt.Sprintf("No subagent [%s].", name)
-	}
-	return string(plainSteps(b))
-}

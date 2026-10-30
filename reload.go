@@ -109,6 +109,7 @@ func (h *harness) reload(r *reloader) error {
 	compact := c.compact
 	c.compact = nil // none starts from here on; the next run builds what is left
 	c.mu.Unlock()
+	c.setAgentCompact(nil)
 	a.cut()
 	if a.life.Err() != nil {
 		return errors.New("opt-chat is quitting")
@@ -126,6 +127,7 @@ func (h *harness) reload(r *reloader) error {
 	c.compact = compact
 	c.pump()
 	c.mu.Unlock()
+	c.setAgentCompact(compact)
 	h.mu.Lock()
 	h.quitting = false
 	h.mu.Unlock()

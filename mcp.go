@@ -70,7 +70,7 @@ var (
 	}
 	mcpTools = []map[string]any{
 		tool("zoom", "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. "+
-			`zoom("Name") gives a subagent's whole chat.`,
+			`zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, as for the chat's.`,
 			schema([]string{"id"}, map[string]any{"id": map[string]any{"type": []string{"integer", "string"}}, "n": num})),
 		tool("date", "The date and time of message id.", schema([]string{"id"}, map[string]any{"id": num})),
 		tool("search", "Find the messages of the whole chat that hold text (a word, a name, a number, an error; any case), newest first, 20 at a time: "+
@@ -208,6 +208,11 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 		err = json.Unmarshal(id, &i)
 	} else if err == nil {
 		isName = false
+	}
+	if agent, line, ok := strings.Cut(s, ":"); tool == "zoom" && isName && ok { // "Name:id": a line of a subagent's chat
+		if j, err := strconv.Atoi(line); err == nil {
+			return a.chat.ZoomAgentLine(agent, j, n)
+		}
 	}
 	switch {
 	case tool == "zoom" && isName:

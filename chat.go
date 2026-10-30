@@ -116,6 +116,7 @@ type Chat struct {
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
 	compact compactor
+	mems    *agentMems // the subagents' chats: their own lock, see agentmem.go
 }
 
 func openChat(dir string) (*Chat, error) {
@@ -137,6 +138,7 @@ func openChat(dir string) (*Chat, error) {
 		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
+		mems: &agentMems{jobs: defaultAgentJobs},
 	}
 	// By id, not by file: a day file is named by the clock, which can go back.
 	var msgs []Msg
@@ -1053,16 +1055,16 @@ func (c *Chat) callView() []string {
 // callKeys are callView's lines' nodes. Caller holds c.mu.
 func (c *Chat) callKeys() []key {
 	keys := c.view.keys
-	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= viewHi {
+	if !slices.ContainsFunc(keys, func(k key) bool { return !c.built(k) }) && c.view.bytes <= c.view.hi {
 		return keys
 	}
 	weigh := func(k key) int { return len(c.callLine(k)) + 1 }
 	size := lo.SumBy(keys, weigh)
-	if size > viewHi {
-		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, viewLo)
+	if size > c.view.hi {
+		keys, size = merged(keys, len(c.msgs), func(a, b key) bool { return !c.built(a) && !c.built(b) }, weigh, size, c.view.lo)
 	}
-	if size > viewHi {
-		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, viewLo)
+	if size > c.view.hi {
+		keys, _ = merged(keys, len(c.msgs), func(a, b key) bool { return true }, weigh, size, c.view.lo)
 	}
 	return keys
 }

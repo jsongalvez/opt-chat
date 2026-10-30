@@ -40,6 +40,8 @@ func main() {
 	ceffort := flag.String("compact-effort", "medium", "effort for compactions")
 	cbare := flag.Bool("compact-bare", true, "memory summary calls (compactions) on a different model from the turns get no tools: they share no cache with turns, and Claude Code adds tool reminders, such as a commit attribution naming the summary call's model, that summaries took for the chat's")
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
+	agentMem := flag.Bool("agent-memory", true, "summarize each subagent's chat into a tree of its own in <dir>/agents/<Name>.mem, as the chat's: zoom(\"Name\") gives its view, not its whole log")
+	agentJobs := flag.Int("agent-jobs", defaultAgentJobs, "compactions running at once in each subagent's chat")
 	ccopied := flag.Bool("compact-copied", true, "ask a compaction again, once, when its line holds a commit, a long number or a file name that its context has and its input doesn't")
 	cnice := flag.Int("compact-nice", 10, "run compactions under nice -n this, so turns keep the CPU on a busy machine (0: off)")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
@@ -81,8 +83,8 @@ func main() {
 	if !given["effort"] && validEffort(saved.Effort) {
 		*effort = saved.Effort
 	}
-	if *jobs < 1 {
-		fatal("-jobs must be 1 or more")
+	if *jobs < 1 || *agentJobs < 1 {
+		fatal("-jobs and -agent-jobs must be 1 or more")
 	}
 	if *importOnly && *importPath == "" {
 		fatal("-import-only needs -import")
@@ -106,6 +108,7 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
+	c.mems.off, c.mems.jobs = !*agentMem, *agentJobs
 	if *importPath != "" {
 		o := importOpts{tools: *importTools, skip: strings.Split(*importSkip, ",")}
 		if *importSince != "" {
@@ -198,6 +201,7 @@ func main() {
 	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
+	c.setAgentCompact(a.Compact)
 	a.resumeCut(cut)
 	if note, resume := a.recoverTurn(); resume { // a turn starts on it
 		h.input(message{kind: "work", text: note})
@@ -257,6 +261,7 @@ func main() {
 		c.mu.Lock()
 		c.compact = nil // none starts from here on; the next run builds what is left
 		c.mu.Unlock()
+		c.setAgentCompact(nil)
 		h.quit()
 		close(stopStatus)
 	}
