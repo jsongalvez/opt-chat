@@ -108,7 +108,6 @@ func main() {
 	if err != nil {
 		fatal("%v", err)
 	}
-	c.mems.off, c.mems.gate.max = !*agentMem, *agentJobs
 	if *importPath != "" {
 		o := importOpts{tools: *importTools, skip: strings.Split(*importSkip, ",")}
 		if *importSince != "" {
@@ -138,10 +137,13 @@ func main() {
 		hb.print = webPrinter()
 	}
 	h := &harness{}
-	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake, *owed), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
+	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake, *owed, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
 		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, ccopied: *ccopied, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
+	if *agentMem {
+		a.mems = newAgentMems(c, *agentJobs)
+	}
 	if *expRelay {
 		// OPT_CHAT_RELAY_TRACE: a file for each request's shape, never its text.
 		if a.relay, err = startRelay("https://api.anthropic.com", os.Getenv("OPT_CHAT_RELAY_TRACE")); err != nil {
@@ -201,7 +203,7 @@ func main() {
 	dim(fmt.Sprintf("[%d messages; the view is %d lines, %d bytes; %s%s]", len(c.msgs), len(c.view.keys), c.view.size(), *dir, backlog))
 	c.pump()
 	c.mu.Unlock()
-	c.setAgentCompact(a.Compact)
+	a.mems.setCompact(a.Compact)
 	a.resumeCut(cut)
 	if note, resume := a.recoverTurn(); resume { // a turn starts on it
 		h.input(message{kind: "work", text: note})
@@ -261,7 +263,7 @@ func main() {
 		c.mu.Lock()
 		c.compact = nil // none starts from here on; the next run builds what is left
 		c.mu.Unlock()
-		c.setAgentCompact(nil)
+		a.mems.setCompact(nil)
 		h.quit()
 		close(stopStatus)
 	}
@@ -334,10 +336,21 @@ func main() {
 	}
 }
 
+// zoom("Name") in the prompt: a subagent's chat as lines, or with
+// -agent-memory=false its whole log.
+const (
+	zoomAgentLines = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does\n"
+	zoomAgentWhole = "- zoom(\"Name\") gives an agent's whole chat\n"
+)
+
 // systemPrompt is the prompt for a chat whose instructions are in
-// agentsMD, with the wake and owe tools listed when on.
-func systemPrompt(agentsMD string, wake, owed bool) string {
+// agentsMD, with the wake and owe tools listed when on, and zoom on
+// subagents as -agent-memory says.
+func systemPrompt(agentsMD string, wake, owed, agentMem bool) string {
 	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
+	if !agentMem {
+		s = strings.Replace(s, zoomAgentLines, zoomAgentWhole, 1)
+	}
 	if wake {
 		s = strings.Replace(s, "\n\n# Turns\n", "\n"+wakePrompt+"\n# Turns\n", 1)
 	}

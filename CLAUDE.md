@@ -43,6 +43,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
 | `claude.go` | `claude -p` calls: turns, compactions, subagents |
 | `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
+| `agentmem.go` | subagents' memory: each one's chat summarized into a tree of its own, `zoom("Name")` and `zoom("Name:id", n)` |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
 | `owed.go` | the owed list: the `owe` tool, `/owed` and `/done`, kept in `<dir>/owed.jsonl` |
 | `eval.go`, `evalcompact.go`, `eval/` | memory evals: side questions (`-eval`), lines built again (`-eval-compact`) |

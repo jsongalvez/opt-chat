@@ -12,6 +12,10 @@ same compaction model and prompt, the same view and zoom. Its view is
 result. `zoom("Name")` gives the view, and `zoom("Name:id", n)` opens its
 line `id+n` as `zoom(id, n)` opens the chat's.
 
+It is on by default. `-agent-memory=false` turns it off: steps go to the
+log only, no `.mem` chat is made, `zoom("Name")` gives the whole log as
+before, and the prompt and the zoom tool say so.
+
 ```mermaid
 flowchart LR
   S[subagent step] --> L[agents/Name.log]
@@ -45,6 +49,12 @@ step goes in once.
 No lock is shared by all subagents over a file read or write: a first
 zoom of one long log holds up no other subagent's steps.
 
+Four locks, always taken in this order: a subagent's own, then the map of
+open subagents' chats, then a chat's, then the count of compactions
+running. Closing idle chats holds the map's lock, over closing their
+files too, and only tries a subagent's own lock, so it never waits
+against the order.
+
 A running subagent's chat is opened at its first step and built as it
 works. A subagent from before this change gets its tree at its first
 zoom. The zoom answers at once: a line not summarized yet shows the heads
@@ -63,9 +73,8 @@ sent it). A failed one shows on the page as the chat's do, named
 All subagents' chats share `-agent-jobs` compactions at once (2), and
 start none while the main chat has a line waiting to be built: the main
 chat's come first. A main chat line that keeps failing, waiting to be
-tried again, holds up none of them. `tools/agent-mem-estimate LOG...` counts a log's
-messages and the compactions its tree takes. On real logs: about 1.1 to
-1.3 compactions per message, so a 500 KB log takes about 540
+tried again, holds up none of them. Counted on real logs, a tree takes
+about 1.1 to 1.3 compactions per message, so a 500 KB log takes about 540
 compactions, about $0.43 at a Haiku compaction's average of $0.0008, and
 about 25 minutes at 2 at once. A 1.4 MB log takes about 1,600. A running
 subagent's chat costs this as it works, whether or not it is ever

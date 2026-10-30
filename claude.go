@@ -29,17 +29,18 @@ import (
 // loop (Bash, Read, Edit, ...); this program only owns the memory.
 type Agent struct {
 	chat            *Chat
-	system          string // the prompt: with agentsMD's instructions, the head of every cached prefix
-	agentsMD        string // the user's instructions, read again when the file changes; "": none
-	mcpConfig       string // the chat's tools, for turns and compactions
-	agentMCP        string // the same tools, for subagents, which can't spawn or tell
-	model, effort   string // turns
-	amodel, aeffort string // subagents
-	cmodel, ceffort string // compactions
-	cnice           int    // compactions run under nice -n this (0: as turns)
-	cbare           bool   // compactions on another model than turns list no tools
-	ccopied         bool   // ask again for a line with tokens from <chat> its input lacks (-compact-copied)
-	relay           *relay // -experimental-relay: see relay.go; nil: off
+	mems            *agentMems // the subagents' chats, see agentmem.go; nil: -agent-memory=false
+	system          string     // the prompt: with agentsMD's instructions, the head of every cached prefix
+	agentsMD        string     // the user's instructions, read again when the file changes; "": none
+	mcpConfig       string     // the chat's tools, for turns and compactions
+	agentMCP        string     // the same tools, for subagents, which can't spawn or tell
+	model, effort   string     // turns
+	amodel, aeffort string     // subagents
+	cmodel, ceffort string     // compactions
+	cnice           int        // compactions run under nice -n this (0: as turns)
+	cbare           bool       // compactions on another model than turns list no tools
+	ccopied         bool       // ask again for a line with tokens from <chat> its input lacks (-compact-copied)
+	relay           *relay     // -experimental-relay: see relay.go; nil: off
 	perm, cwd       string
 	tools           string
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers

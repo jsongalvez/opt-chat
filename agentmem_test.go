@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -32,6 +33,11 @@ func bigAgentLog(t *testing.T, c *Chat, name string, n, size int) {
 	}
 }
 
+// memAgent is an Agent on c with subagents' memory on, as by default.
+func memAgent(c *Chat) *Agent {
+	return &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}, mems: newAgentMems(c, defaultAgentJobs)}
+}
+
 func zoomTool(a *Agent, id any, n int) string {
 	b, _ := json.Marshal(id)
 	s, _ := callTool(a, false, "zoom", toolArgs{ID: b, N: n})
@@ -42,7 +48,7 @@ func zoomTool(a *Agent, id any, n int) string {
 // chat, not its whole log, which overflowed the caller's context.
 func TestAgentZoomBounded(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := memAgent(c)
 	bigAgentLog(t, c, "Big", 300, 5000) // 1.5 MB
 	got := zoomTool(a, "Big", 0)
 	if len(got) > 40_000 {
@@ -56,10 +62,10 @@ func TestAgentZoomBounded(t *testing.T) {
 // after steps it missed takes each once.
 func TestAgentMemTree(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 300)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := memAgent(c)
 	bigAgentLog(t, c, "Big", 300, 5000)
-	c.setAgentCompact(c.compact)
-	sc, err := c.agentMem("Big")
+	a.mems.setCompact(c.compact)
+	sc, err := a.mems.chat("Big")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,14 +99,14 @@ func TestAgentMemTree(t *testing.T) {
 	// As after a crash between its log and its chat: the chat is closed,
 	// and a step is logged that it never got.
 	waitIdle(t, sc)
-	c.mems.mu.Lock()
+	a.mems.mu.Lock()
 	sc.lock.Close()
-	c.mems.open = nil
-	c.mems.mu.Unlock()
+	a.mems.open = nil
+	a.mems.mu.Unlock()
 	f, _ := os.OpenFile(filepath.Join(c.dir, "agents", "Big.log"), os.O_APPEND|os.O_WRONLY, 0)
 	f.WriteString("thinking: hidden\n\nagent: missed\n\n")
 	f.Close()
-	sc, err = c.agentMem("Big")
+	sc, err = a.mems.chat("Big")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +136,40 @@ func TestAgentMemTree(t *testing.T) {
 	if got := zoomTool(a, half, 1); got != fmt.Sprintf("%d+1|agent: half and the rest", steps+2) {
 		t.Fatalf("the entry once whole: %q", got)
 	}
+}
 
-	c.mems.off = true
-	if got := zoomTool(a, "Big", 0); !strings.HasPrefix(got, "task: fix the build\n\non: opus medium\n\ntool: Bash") {
-		t.Fatalf("-agent-memory=false: %.100q", got)
+// With -agent-memory=false, zoom("Name") gives the whole log as before,
+// steps go to the log only, and the prompt and the zoom tool say so.
+func TestAgentMemOff(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	bigAgentLog(t, c, "Big", 3, 10)
+	a.agentWrite("Big", "agent", "one more step")
+	got := zoomTool(a, "Big", 0)
+	if want := agentPlain(c.dir, "Big"); got != want || !strings.HasPrefix(got, "task: fix the build\n\non: opus medium\n\ntool: Bash") || !strings.Contains(got, "agent: one more step") {
+		t.Fatalf("zoom(\"Big\"): %.200q", got)
+	}
+	if got := zoomTool(a, "Big:0", 1); !strings.Contains(got, "-agent-memory=false") {
+		t.Fatalf("zoom(\"Big:0\", 1): %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(c.dir, "agents", "Big.mem")); !os.IsNotExist(err) {
+		t.Fatalf("a chat made for Big: %v", err)
+	}
+	for _, mem := range []bool{true, false} {
+		a.mems = nil
+		if mem {
+			a.mems = newAgentMems(c, 1)
+		}
+		var zoom string
+		for _, tl := range a.mcpList() {
+			if tl["name"] == "zoom" {
+				zoom = tl["description"].(string)
+			}
+		}
+		prompt := systemPrompt("", false, false, mem)
+		if lines := strings.Contains(zoom, `zoom("Name:id", n)`); lines != mem || strings.Contains(prompt, `zoom("Name:id", n)`) != mem {
+			t.Errorf("memory %v: the zoom tool says %q; the prompt offers lines: %v", mem, zoom, !lines)
+		}
 	}
 }
 
@@ -144,7 +180,7 @@ func TestAgentMemTornWrite(t *testing.T) {
 		t.Skip("writes 20 MB with an fsync per step")
 	}
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
 	a.agentWrite("W", "task", "write steps")
 	echo := strings.Repeat("a line of output\n\n", 40_000) // ~720 KB, one write
@@ -154,7 +190,7 @@ func TestAgentMemTornWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for !stop.Load() {
-			c.ZoomAgent("W")
+			a.ZoomAgent("W")
 		}
 	}()
 	const n = 30
@@ -163,7 +199,7 @@ func TestAgentMemTornWrite(t *testing.T) {
 	}
 	stop.Store(true)
 	wg.Wait()
-	sc, err := c.agentMem("W")
+	sc, err := a.mems.chat("W")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +224,7 @@ func TestAgentMemTornWrite(t *testing.T) {
 // what it was asked and what it ended with, not bare placeholders.
 func TestAgentZoomFirstViewHeads(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := memAgent(c)
 	bigAgentLog(t, c, "Big", 300, 5000)
 	view := zoomTool(a, "Big", 0)
 	for _, want := range []string{"task: fix the build", "agent: done: the build is green"} {
@@ -205,7 +241,7 @@ func TestAgentZoomFirstViewHeads(t *testing.T) {
 // while the main chat has a line waiting to be built.
 func TestAgentMemSharesQueue(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := memAgent(c)
 	mainFake := c.compact
 	c.mu.Lock()
 	c.compact = func(ctx context.Context, l []string, s int, b []block) (string, error) {
@@ -228,7 +264,7 @@ func TestAgentMemSharesQueue(t *testing.T) {
 		time.Sleep(time.Millisecond)
 		return strings.Repeat("s", 100), nil
 	}
-	c.setAgentCompact(sub)
+	a.mems.setCompact(sub)
 	var ms []Msg
 	for i := range 400 {
 		ms = append(ms, Msg{Kind: "user", Text: fmt.Sprintf("message %d %s", i, strings.Repeat("y", 800))})
@@ -240,44 +276,56 @@ func TestAgentMemSharesQueue(t *testing.T) {
 	}
 	waitIdle(t, c)
 	for _, name := range []string{"A", "B", "C"} {
-		sc, _ := c.agentMem(name)
+		sc, _ := a.mems.chat(name)
 		waitIdle(t, sc)
 	}
-	if most.Load() > int64(c.mems.gate.max) {
-		t.Errorf("%d subagent compactions at once, want at most %d in all", most.Load(), c.mems.gate.max)
+	if most.Load() > int64(a.mems.gate.max) {
+		t.Errorf("%d subagent compactions at once, want at most %d in all", most.Load(), a.mems.gate.max)
 	}
 	if early.Load() > 0 {
 		t.Errorf("%d subagent compactions started while the main chat had lines waiting", early.Load())
 	}
 }
 
-// A slow first zoom of one subagent's long log holds up no other subagent's
-// steps.
+// A first zoom of one subagent, however long its log takes to read, holds
+// up no other subagent's steps. Old's log is a pipe: its zoom stays in the
+// read, holding whatever it holds, until the test writes the log and closes
+// it.
 func TestAgentMemNoGlobalStall(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	bigAgentLog(t, c, "Old", 4000, 5000) // 20 MB
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
 	a.agentWrite("Run", "task", "work")
-	started := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		close(started)
-		c.ZoomAgent("Old")
-		close(done)
-	}()
-	<-started
-	time.Sleep(20 * time.Millisecond) // the zoom is reading
-	t0 := time.Now()
-	a.agentWrite("Run", "agent", "a step")
-	took := time.Since(t0)
-	select {
-	case <-done:
-		t.Skip("the first zoom ended before the step: the machine is too fast for this check")
-	default:
+	pipe := filepath.Join(c.dir, "agents", "Old.log")
+	if err := syscall.Mkfifo(pipe, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	<-done
-	if took > 300*time.Millisecond { // 800 ms before the fix
-		t.Fatalf("a step of another subagent waited %v on a first zoom", took)
+	zoomed := make(chan string)
+	go func() { zoomed <- a.ZoomAgent("Old") }()
+	w, err := os.OpenFile(pipe, os.O_WRONLY, 0) // returns once the zoom opened it to read
+	if err != nil {
+		t.Fatal(err)
+	}
+	stepped := make(chan struct{})
+	go func() {
+		a.agentWrite("Run", "agent", "a step")
+		close(stepped)
+	}()
+	select {
+	case <-stepped:
+	case got := <-zoomed:
+		t.Fatalf("the zoom ended before its log did: %q", got)
+	case <-time.After(time.Minute): // a deadlock, not a slow machine
+		w.Close()
+		t.Fatal("a step of another subagent waited on Old's first zoom")
+	}
+	w.WriteString("task: old work\n\nagent: done\n\n")
+	w.Close()
+	if got := <-zoomed; !strings.Contains(got, "[Old]'s chat, 2 messages") {
+		t.Fatalf("zoom(\"Old\"): %q", got)
+	}
+	if got := zoomTool(a, "Run:1", 1); got != "1+1|agent: a step" {
+		t.Fatalf("Run's step: %q", got)
 	}
 }
 
@@ -295,44 +343,38 @@ func TestAgentMemFailureNoticed(t *testing.T) {
 			mu.Unlock()
 		}
 	}
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	c.setAgentCompact(func(context.Context, []string, int, []block) (string, error) {
+	a := memAgent(c)
+	a.mems.setCompact(func(context.Context, []string, int, []block) (string, error) {
 		return "", fmt.Errorf("model down")
 	})
 	bigAgentLog(t, c, "Bad", 5, 2000)
 	zoomTool(a, "Bad", 0)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	defer a.mems.setCompact(nil)
+	waitFor(t, "a notice naming [Bad]", func() bool {
 		mu.Lock()
+		defer mu.Unlock()
 		got := strings.Join(notes, "\n")
-		mu.Unlock()
-		if strings.Contains(got, "[Bad]") && strings.Contains(got, "model down") {
-			c.setAgentCompact(nil)
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	c.setAgentCompact(nil)
-	t.Fatalf("no notice naming [Bad]: %q", notes)
+		return strings.Contains(got, "[Bad]") && strings.Contains(got, "model down")
+	})
 }
 
 // Subagents' chats don't stay open for the life of the process: past
 // agentOpenMax, idle ones close, and one closed opens again whole.
 func TestAgentMemCloses(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	c.setAgentCompact(c.compact)
+	a := memAgent(c)
+	a.mems.setCompact(c.compact)
 	const n = agentOpenMax + 8
 	for i := range n {
 		name := fmt.Sprintf("S%d", i)
 		bigAgentLog(t, c, name, 3, 100)
 		zoomTool(a, name, 0)
-		sc, _ := c.agentMem(name)
+		sc, _ := a.mems.chat(name)
 		waitIdle(t, sc)
 	}
-	c.mems.mu.Lock()
-	open := len(c.mems.open)
-	c.mems.mu.Unlock()
+	a.mems.mu.Lock()
+	open := len(a.mems.open)
+	a.mems.mu.Unlock()
 	if open > agentOpenMax {
 		t.Fatalf("%d subagents' chats open, want at most %d", open, agentOpenMax)
 	}
@@ -340,7 +382,7 @@ func TestAgentMemCloses(t *testing.T) {
 	if got := zoomTool(a, "S0:9", 1); got != "9+1|agent: after the close" {
 		t.Fatalf("a closed chat opened again: %q", got)
 	}
-	sc, _ := c.agentMem("S0")
+	sc, _ := a.mems.chat("S0")
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	if len(sc.msgs) != 10 {
@@ -351,6 +393,7 @@ func TestAgentMemCloses(t *testing.T) {
 // A main chat line that keeps failing holds up no subagent's memory.
 func TestAgentMemMainFailing(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := memAgent(c)
 	mainFake := c.compact
 	var poisoned atomic.Bool
 	poisoned.Store(true)
@@ -362,29 +405,21 @@ func TestAgentMemMainFailing(t *testing.T) {
 		return mainFake(ctx, l, s, b)
 	}
 	c.mu.Unlock()
-	c.setAgentCompact(func(context.Context, []string, int, []block) (string, error) {
+	a.mems.setCompact(func(context.Context, []string, int, []block) (string, error) {
 		return strings.Repeat("s", 100), nil
 	})
 	c.logMsgs([]Msg{{Kind: "user", Text: "poison " + strings.Repeat("p", 800)}})
-	time.Sleep(50 * time.Millisecond) // it fails, and waits to try again
+	waitFor(t, "the main chat's line to fail and wait to be tried again", func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return len(c.failing) > 0 && len(c.busy) == 0
+	})
 	bigAgentLog(t, c, "Sub", 5, 2000)
-	sc, err := c.agentMem("Sub")
+	sc, err := a.mems.chat("Sub")
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		sc.mu.Lock()
-		idle := len(sc.busy) == 0 && len(sc.ready0) == 0 && len(sc.readyM) == 0
-		sc.mu.Unlock()
-		if idle {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the subagent's chat built nothing while a main chat line kept failing")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitIdle(t, sc)
 	poisoned.Store(false)
 	c.logMsgs([]Msg{{Kind: "user", Text: "back"}}) // the user is back: it is tried again now
 }

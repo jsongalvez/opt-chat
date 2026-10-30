@@ -51,8 +51,8 @@ func TestWebTellAgent(t *testing.T) {
 		ws.send(map[string]any{"t": "tellAgent", "seq": seq, "key": "page:t1", "name": "Scout", "text": "check this", "files": []attachment{img}})
 		ws.next("sent", func(u map[string]any) bool { return u["t"] == "sent" && u["seq"].(float64) == float64(seq) })
 	}
-	waitFor(t, "its reply", func() bool { return strings.Contains(c.agentPlain("Scout"), "with 1 images") })
-	log := c.agentPlain("Scout")
+	waitFor(t, "its reply", func() bool { return strings.Contains(agentPlain(c.dir, "Scout"), "with 1 images") })
+	log := agentPlain(c.dir, "Scout")
 	if !strings.Contains(log, "user: check this\n\n<attachment name=\"a.png\" path=") || strings.Count(log, "user: check this") != 1 {
 		t.Fatalf("its log: %q", log)
 	}
@@ -119,7 +119,7 @@ func TestWebCompactAgent(t *testing.T) {
 	ws.next("it compacts", func(u map[string]any) bool {
 		return u["t"] == "notice" && u["level"] == "info" && u["s"] == "[Scout] compacts its context now."
 	})
-	waitFor(t, "its compaction", func() bool { return strings.Contains(c.agentPlain("Scout"), "compacted: 300000 tokens to 20000") })
+	waitFor(t, "its compaction", func() bool { return strings.Contains(agentPlain(c.dir, "Scout"), "compacted: 300000 tokens to 20000") })
 	waitFor(t, "it at rest again", func() bool { return agentState(a, "Scout") == "resting" })
 	ws.send(map[string]any{"t": "compactAgent", "name": "Nobody"})
 	ws.next("no call", func(u map[string]any) bool {
@@ -174,7 +174,7 @@ func TestUserTurnReports(t *testing.T) {
 	if out, ok := a.TellUser("[Rest]", "", []attachment{voice}, false); !ok {
 		t.Fatal(out)
 	}
-	waitFor(t, "its reply", func() bool { return strings.Contains(c.agentPlain("Rest"), "hello there\\n</attachment>") })
+	waitFor(t, "its reply", func() bool { return strings.Contains(agentPlain(c.dir, "Rest"), "hello there\\n</attachment>") })
 	waitFor(t, "Rest at rest again", func() bool { return agentState(a, "Rest") == "resting" })
 	none()
 	if got := workLines(c, "[user → Rest]"); len(got) != 1 || got[0] != `work: [user → Rest]`+"\n\nAttached: voice 0:02.webm (its words: \"hello there\")" {
@@ -193,7 +193,7 @@ func TestUserTurnReports(t *testing.T) {
 
 	// At work on its task, the user's message: the task's end reports.
 	a.Spawn("Work", "wait-for-message", "", "", 0, nil)
-	waitFor(t, "Work waiting", func() bool { return strings.Contains(c.agentPlain("Work"), "agent: waiting") })
+	waitFor(t, "Work waiting", func() bool { return strings.Contains(agentPlain(c.dir, "Work"), "agent: waiting") })
 	if out, ok := a.TellUser("Work", "banana", nil, false); !ok {
 		t.Fatal(out)
 	}
@@ -208,7 +208,7 @@ func TestUserTurnReports(t *testing.T) {
 	if out, ok := a.TellUser("Mixed", "wait-for-message", nil, false); !ok {
 		t.Fatal(out)
 	}
-	waitFor(t, "Mixed waiting", func() bool { return strings.Contains(c.agentPlain("Mixed"), "agent: waiting") })
+	waitFor(t, "Mixed waiting", func() bool { return strings.Contains(agentPlain(c.dir, "Mixed"), "agent: waiting") })
 	if !rec("Mixed").User {
 		t.Fatal("its record does not say the user's turn")
 	}
@@ -227,7 +227,7 @@ func TestUserTurnReports(t *testing.T) {
 	report()
 	waitFor(t, "Stop at rest", func() bool { return agentState(a, "Stop") == "resting" })
 	a.TellUser("Stop", "wait-for-stop", nil, false)
-	waitFor(t, "Stop at work", func() bool { return strings.Contains(c.agentPlain("Stop"), "agent: working") })
+	waitFor(t, "Stop at work", func() bool { return strings.Contains(agentPlain(c.dir, "Stop"), "agent: working") })
 	a.StopAgent("Stop")
 	waitFor(t, "Stop halted", func() bool { return agentState(a, "Stop") == "halted" })
 	none()
@@ -254,14 +254,14 @@ func TestTellUserNow(t *testing.T) {
 		}
 	}
 	a.Spawn("Slow", "slow-task", "", "", 0, nil)
-	waitFor(t, "its long call", func() bool { return strings.Contains(c.agentPlain("Slow"), "sleep 600") })
+	waitFor(t, "its long call", func() bool { return strings.Contains(agentPlain(c.dir, "Slow"), "sleep 600") })
 	if out, ok := a.TellUser("Slow", "hurry", nil, true); !ok || out != "Sent: [Slow] was interrupted to read it now." {
 		t.Fatal(out, ok)
 	}
 	if got := report(); !strings.HasPrefix(got, "[Slow] hurried: "+userHead+"hurry") {
 		t.Fatalf("its report: %q", got)
 	}
-	log := c.agentPlain("Slow")
+	log := agentPlain(c.dir, "Slow")
 	call, told, cut := strings.Index(log, "sleep 600"), strings.Index(log, "user: hurry"), strings.Index(log, "echo: The user doesn't want to proceed") // as Claude Code answers a call cut
 	if call < 0 || told < call || cut < told || strings.Count(log, "user: hurry") != 1 {
 		t.Fatalf("its log: %q", log)
@@ -277,7 +277,7 @@ func TestTellUserNow(t *testing.T) {
 	if out, ok := a.TellUser("Slow", "hurry again", nil, true); !ok || !strings.HasPrefix(out, "Sent: [Slow] is at work on it") {
 		t.Fatal(out, ok)
 	}
-	waitFor(t, "its answer", func() bool { return strings.Contains(c.agentPlain("Slow"), "hurried: "+userHead+"hurry again") })
+	waitFor(t, "its answer", func() bool { return strings.Contains(agentPlain(c.dir, "Slow"), "hurried: "+userHead+"hurry again") })
 	if n := strings.Count(strings.Join(fakeFiles(a, ".ctl"), ""), `"interrupt"`); n != 1 {
 		t.Fatalf("%d interrupts", n)
 	}
@@ -293,7 +293,7 @@ func TestUserTurnSurvivesRestart(t *testing.T) {
 	a.Spawn("Cut", "first", "", "", 0, nil)
 	waitFor(t, "Cut at rest", func() bool { return agentState(a, "Cut") == "resting" })
 	a.TellUser("Cut", "wait-for-stop", nil, false)
-	waitFor(t, "Cut at work", func() bool { return strings.Contains(c.agentPlain("Cut"), "agent: working") })
+	waitFor(t, "Cut at work", func() bool { return strings.Contains(agentPlain(c.dir, "Cut"), "agent: working") })
 	a.quit()
 	if r, _ := a.loadRecord("Cut"); !r.Cut || !r.User {
 		t.Fatalf("its record: %+v", r)
@@ -309,7 +309,9 @@ func TestUserTurnSurvivesRestart(t *testing.T) {
 	}
 	before := len(workLines(c, ""))
 	b.resumeCut(cut)
-	waitFor(t, "its reply", func() bool { return strings.Contains(c.agentPlain("Cut"), "agent: answer to "+`"`+restartUserNote) })
+	waitFor(t, "its reply", func() bool {
+		return strings.Contains(agentPlain(c.dir, "Cut"), "agent: answer to "+`"`+restartUserNote)
+	})
 	waitFor(t, "Cut at rest", func() bool { return agentState(b, "Cut") == "resting" })
 	select {
 	case got := <-reported:
