@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -70,6 +71,10 @@ type agentMem struct {
 	read int64        // bytes of the log fed into c
 	used atomic.Int64 // when last fed, in Unix nanoseconds: read without mu
 	gone bool         // closed and out of the map: take the name's entry again
+	// The log ends in a blank line, as each step does: written by this
+	// entry. Not known, it is checked before a step: one cut short (a
+	// crash, a full disk) would take the next step's head for its text.
+	sealed bool
 }
 
 // chatRole is what sets a chat's compactions apart by whose chat it is:
@@ -167,16 +172,22 @@ func (g *jobGate) setMain(waits bool) {
 	}
 }
 
-// pump gives the subagents' chats a chance at the gate.
+// pump gives the subagents' chats a chance at the gate. It takes their
+// mus without agentMems.mu: one held over a write to disk holds up no
+// other subagent. One closed meanwhile has no compactor, and pumps nothing.
 func (m *agentMems) pump() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var cs []*Chat
 	for _, am := range m.open {
 		if am.c != nil {
-			am.c.mu.Lock()
-			am.c.pump()
-			am.c.mu.Unlock()
+			cs = append(cs, am.c)
 		}
+	}
+	m.mu.Unlock()
+	for _, c := range cs {
+		c.mu.Lock()
+		c.pump()
+		c.mu.Unlock()
 	}
 }
 
@@ -228,10 +239,14 @@ func (m *agentMems) appendStep(name, path string, b []byte) error {
 		return appendRaw(path, b)
 	}
 	am := m.lock(name)
+	if !am.sealed && !endsBlank(path) {
+		b = append([]byte("\n\n"), b...)
+	}
 	err := appendRaw(path, b)
+	am.sealed = err == nil
 	if err == nil {
 		if _, ferr := m.fed(name, am); ferr != nil {
-			warn("[%s] memory: %v", name, ferr)
+			m.main.hub.notice("warn", "[%s] memory: %v", name, ferr)
 		}
 	}
 	am.mu.Unlock()
@@ -259,7 +274,9 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 		return am.c, m.feed(name, am, am.c)
 	}
 	dir := filepath.Join(m.main.dir, "agents")
-	if _, err := os.Stat(filepath.Join(dir, name+".log")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, name+".log")); os.IsNotExist(err) {
+		return nil, errNoLog
+	} else if err != nil {
 		return nil, err
 	}
 	sc, err := openChat(filepath.Join(dir, name+".mem"))
@@ -359,12 +376,15 @@ func (m *agentMems) closeIdle(keep string) {
 		}
 		idle := true
 		if sc := e.am.c; sc != nil {
-			sc.mu.Lock()
-			if idle = len(sc.busy) == 0 && len(sc.ready0) == 0 && len(sc.readyM) == 0; idle {
-				sc.compact = nil
-				sc.lock.Close()
+			if !sc.mu.TryLock() { // writing a line to disk: in use, and agentMems.mu is held
+				idle = false
+			} else {
+				if idle = len(sc.busy) == 0 && len(sc.ready0) == 0 && len(sc.readyM) == 0; idle {
+					sc.compact = nil
+					sc.lock.Close()
+				}
+				sc.mu.Unlock()
 			}
-			sc.mu.Unlock()
 		}
 		if idle {
 			e.am.c, e.am.gone = nil, true
@@ -404,7 +424,7 @@ func (a *Agent) ZoomAgent(name string) string {
 	}
 	sc, err := a.mems.chat(name)
 	if err != nil {
-		return fmt.Sprintf("No subagent [%s].", name)
+		return memFailed(name, err)
 	}
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -427,8 +447,40 @@ func (a *Agent) ZoomAgentLine(name string, id, n int) (string, []string) {
 	}
 	sc, err := a.mems.chat(name)
 	if err != nil {
-		return fmt.Sprintf("No subagent [%s].", name), nil
+		return memFailed(name, err), nil
 	}
 	text, _ := sc.Zoom(id, max(n, 1)) // a step has no images
 	return text, nil
+}
+
+// errNoLog: the name has no log, so no subagent.
+var errNoLog = errors.New("no log")
+
+// memFailed is what zoom says when the subagent name's chat can't open.
+func memFailed(name string, err error) string {
+	if errors.Is(err, errNoLog) {
+		return fmt.Sprintf("No subagent [%s].", name)
+	}
+	return fmt.Sprintf("[%s]'s memory failed to open: %v.", name, err)
+}
+
+// endsBlank is whether the log at path is empty or ends in a blank line,
+// as every whole step does. One that can't be read is taken to: the write
+// after fails on its own.
+func endsBlank(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+	b := make([]byte, 2)
+	fi, err := f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return true
+	}
+	if fi.Size() < 2 {
+		return false
+	}
+	_, err = f.ReadAt(b, fi.Size()-2)
+	return err != nil || string(b) == "\n\n"
 }

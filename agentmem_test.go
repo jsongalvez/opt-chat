@@ -423,3 +423,114 @@ func TestAgentMemMainFailing(t *testing.T) {
 	poisoned.Store(false)
 	c.logMsgs([]Msg{{Kind: "user", Text: "back"}}) // the user is back: it is tried again now
 }
+
+// stalls fails the test if step, a subagent's step or Opt's zoom, waits
+// while another subagent's chat holds its lock, as its fsyncs do
+// (AgentMem.tla, NoWaitOnOthersIO).
+func stalls(t *testing.T, held *Chat, what string, step func()) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { step(); close(done) }()
+	select {
+	case <-done:
+		held.mu.Unlock()
+	case <-time.After(10 * time.Second): // a wait on another's lock, not a slow machine
+		held.mu.Unlock()
+		<-done
+		t.Fatal(what + " waited on another subagent's chat")
+	}
+}
+
+// The pump that follows any subagent's compaction never holds every
+// subagent up behind one chat writing to disk.
+func TestAgentMemPumpNoStall(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	a.agentWrite("A", "task", "work a")
+	a.agentWrite("B", "task", "work b")
+	scA, _ := a.mems.chat("A")
+	scA.mu.Lock()
+	go a.mems.pump() // jobGate.kick
+	for end := time.Now().Add(time.Second); time.Now().Before(end); time.Sleep(time.Millisecond) {
+		if !a.mems.mu.TryLock() {
+			break // the pump is in
+		}
+		a.mems.mu.Unlock()
+	}
+	stalls(t, scA, "B's step", func() { a.agentWrite("B", "agent", "a step") })
+	stalls(t, scA, "zoom(\"B\")", func() { scA.mu.Lock(); go a.mems.pump(); a.ZoomAgent("B") })
+}
+
+// Closing idle chats past agentOpenMax skips one that is writing, as it
+// skips one being fed, and holds no other subagent up.
+func TestAgentMemCloseNoStall(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	for i := range agentOpenMax {
+		a.agentWrite(fmt.Sprintf("S%d", i), "task", "work")
+	}
+	s0, _ := a.mems.chat("S0") // the least used: the first closeIdle tries
+	for i := 1; i < agentOpenMax; i++ {
+		a.mems.chat(fmt.Sprintf("S%d", i))
+	}
+	s0.mu.Lock() // as Chat.build holds it over flushNodes and saveView
+	stalls(t, s0, "a new subagent's first step", func() { a.agentWrite("New", "task", "work") })
+	a.mems.mu.Lock()
+	defer a.mems.mu.Unlock()
+	if len(a.mems.open) > agentOpenMax {
+		t.Fatalf("%d chats open, want at most %d", len(a.mems.open), agentOpenMax)
+	}
+}
+
+// A step written after a crash cut the log's last one short is a step of
+// its own, not the cut one's text (AgentMem.tla, NoLostStep).
+func TestAgentMemTornTail(t *testing.T) {
+	for _, cut := range []string{"tool@1761134400001#toolu_1: Bash {\"comm", "too"} {
+		c, _ := fakeChat(t, t.TempDir(), 100)
+		os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+		os.WriteFile(filepath.Join(c.dir, "agents", "T.log"), []byte("task: work\n\n"+cut), 0o600)
+		a := memAgent(c) // opt-chat started again
+		a.agentWrite("T", "agent", "after the crash")
+		sc, err := a.mems.chat("T")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sc.mu.Lock()
+		last := sc.msgs[len(sc.msgs)-1]
+		sc.mu.Unlock()
+		if last.Kind != "agent" || last.Text != "after the crash" {
+			t.Errorf("cut %q: the last message is %s: %q", cut, last.Kind, last.Text)
+		}
+	}
+}
+
+// A subagent's memory that can't open says so on the page and in zoom,
+// never that the subagent doesn't exist (AgentMem.tla, FailureSurfaces).
+func TestAgentMemOpenFails(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.hub = newHub()
+	var mu sync.Mutex
+	var notes []string
+	c.hub.print = func(v any) {
+		if n, ok := v.(noticeUpdate); ok {
+			mu.Lock()
+			notes = append(notes, n.S)
+			mu.Unlock()
+		}
+	}
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	os.WriteFile(filepath.Join(c.dir, "agents", "X.mem"), []byte("not a chat"), 0o600)
+	a.agentWrite("X", "task", "work")
+	mu.Lock()
+	got := strings.Join(notes, "\n")
+	mu.Unlock()
+	if !strings.Contains(got, "[X] memory") {
+		t.Errorf("no notice of X's memory failing: %q", got)
+	}
+	if z := zoomTool(a, "X", 0); strings.Contains(z, "No subagent") || !strings.Contains(z, "[X]") {
+		t.Errorf("zoom(\"X\"): %q", z)
+	}
+}
