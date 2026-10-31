@@ -1,7 +1,7 @@
 name: formal
 on:
   push:
-    branches: [master]
+    branches: [master, subagent-memory-ci]
     paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/**', .github/workflows/formal.yml]
   pull_request:
     paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/**', .github/workflows/formal.yml]
