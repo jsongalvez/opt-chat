@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -178,51 +179,36 @@ func TestAgentMemOff(t *testing.T) {
 	}
 }
 
-// A zoom while a subagent writes a step with blank lines in it must not cut
-// the step at one of them: every step goes in whole.
+// A zoom while a step is half written waits for the write, which holds the
+// subagent's lock: it never takes the half for whole entries, as a blank
+// line in the step's text would make it look, and so never cuts the step.
 func TestAgentMemTornWrite(t *testing.T) {
 	t.Parallel()
-	if testing.Short() {
-		t.Skip("writes 20 MB with an fsync per step")
-	}
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
 	a.agentWrite("W", "task", "write steps")
-	echo := strings.Repeat("a line of output\n\n", 40_000) // ~720 KB, one write
-	var stop atomic.Bool
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for !stop.Load() {
-			a.ZoomAgent("W")
-		}
-	}()
-	const n = 30
-	for i := range n {
-		a.agentWrite("W", "echo", fmt.Sprintf("%d\n\n%s", i, echo))
-	}
-	stop.Store(true)
-	wg.Wait()
-	sc, err := a.mems.chat("W")
-	if err != nil {
+	text := "first half\n\nsecond half"
+	b := []byte(stepHead(step{Kind: "echo", Text: text, At: nowMs()}) + text + "\n\n")
+	cut := bytes.Index(b, []byte("\n\nsecond")) + 2
+	am := a.mems.lock("W") // as appendStep holds it over its write
+	if err := appendRaw(a.agentLog("W"), b[:cut]); err != nil {
 		t.Fatal(err)
 	}
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	var got strings.Builder
-	steps := 0
-	for _, m := range sc.msgs {
-		if m.Kind == "echo" && m.Part == 0 {
-			steps++
-		}
-		if m.Kind == "echo" {
-			got.WriteString(m.Text)
-		}
+	zoomed := make(chan struct{})
+	go func() { a.ZoomAgent("W"); close(zoomed) }()
+	select {
+	case <-zoomed:
+		t.Fatal("zoom read the log while a step was half written")
+	case <-time.After(200 * time.Millisecond):
 	}
-	if want := n * len(echo); steps != n || got.Len() < want {
-		t.Fatalf("%d echo steps, %d bytes of them; want %d steps, at least %d bytes", steps, got.Len(), n, want)
+	if err := appendRaw(a.agentLog("W"), b[cut:]); err != nil {
+		t.Fatal(err)
+	}
+	am.mu.Unlock()
+	<-zoomed
+	if got := strings.Join(memTexts(t, a, "W"), ","); got != "write steps,"+text {
+		t.Fatalf("the chat: %q", got)
 	}
 }
 
