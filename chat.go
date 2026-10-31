@@ -303,7 +303,9 @@ func (c *Chat) failWrite(err error) {
 	if c.role.sub == "" {
 		fatal("%v", err)
 	}
-	c.warn(true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, c.role.sub))
+	if !c.role.warned.Swap(true) {
+		c.warn(true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, c.role.sub))
+	}
 	c.broken = err
 }
 

@@ -448,7 +448,7 @@ func (a *Agent) agentWrite(name, kind, text string) { a.agentWriteRef(name, kind
 // and, on a tool call and its echo, the call's id: see stepHead.
 func (a *Agent) agentWriteRef(name, kind, text, ref string) {
 	s := step{Kind: kind, Text: text, At: nowMs(), Ref: ref}
-	if err := a.logStep(name, []byte(stepHead(s)+text+"\n\n")); err != nil {
+	if err := a.mems.appendStep(name, a.agentLog(name), []byte(stepHead(s)+text+"\n\n")); err != nil {
 		warn("[%s] log: %v", name, err)
 	}
 	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: s})
@@ -617,7 +617,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if size > 0 {
 			on += ", its context at " + k(size) + " tokens"
 		}
-		a.report(fmt.Sprintf("%s\n\nRan on %s. Full chat: zoom(%q)", text, on, name)) // as UniiChat ends a report
+		a.report(fmt.Sprintf("%s\n\nRan on %s. %s", text, on, a.chatRef(name))) // as UniiChat ends a report
 	}
 	report := func(text string) { // the end
 		a.mu.Lock()
@@ -660,8 +660,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			return
 		case byUser:
 			a.chat.hub.notice("info", "[%s] stopped", name)
-			a.chat.Log("work", fmt.Sprintf("[%s] stopped: the user stopped it from the page before it finished, so it sends no report. %s\n\nRan on %s. Full chat: zoom(%q)",
-				name, resumeHint(name), strings.TrimSpace(model+" "+effort), name))
+			a.chat.Log("work", fmt.Sprintf("[%s] stopped: the user stopped it from the page before it finished, so it sends no report. %s\n\nRan on %s. %s",
+				name, resumeHint(name), strings.TrimSpace(model+" "+effort), a.chatRef(name)))
 			return
 		case state == "stopped":
 			how, why := "quit", ""

@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Model-check opt-chat's subagent memory (agentmem.go) with TLA+ (formal/agentmem). Use before committing any change to agentmem.go, to the logStep/agentWriteRef path in agents.go, or to Chat.pump, Chat.build or Chat.logMsgs in chat.go, or when asked whether a subagent's step can be lost, doubled or swallowed, whether one subagent can hold another up, or whether its locks can deadlock.
+description: Model-check opt-chat's subagent memory (agentmem.go) with TLA+ (formal/agentmem). Use before committing any change to agentmem.go, to the agentWriteRef/appendStep path in agents.go, or to Chat.pump, Chat.build or Chat.logMsgs in chat.go, or when asked whether a subagent's step can be lost, doubled or swallowed, whether one subagent can hold another up, or whether its locks can deadlock.
 ---
 
 # Subagent memory, model-checked
@@ -40,7 +40,7 @@ of the code between two lock operations.
 | model | code |
 |---|---|
 | Lock, LockAm | `agentMems.lock` (m.mu to find the entry, then the entry's mu) |
-| StartWrite, WriteStep, TornWrite | `agentWriteRef` (agents.go) → `agentMems.appendStep`: the seal (`endsBlank`, `agentMem.sealed`), `appendRaw` |
+| StartWrite, WriteStep, TornWrite | `agentWriteRef` (agents.go) → `agentMems.appendStep`: the seal (`sealed`, `endsBlank`, `agentMem.sealed`), `appendRaw` |
 | FeedStep, LockSc, LogIO, OpenSet | `agentMems.fed` and `feed`; `Chat.logMsgs` holds the chat's mu over `appendDay` and `saveView` (fsync); `closeBroken` before and after the feed |
 | MemFail | `appendDay` or `saveView` failing in a subagent's chat (a full disk): `Chat.failWrite`; `closeBroken` |
 | BuildFail | `flushNodes` or `saveView` failing at a compaction's end: `Chat.broken` set |
@@ -63,12 +63,12 @@ failed open closes it: TestAgentMemWriteFails, disk full), and the check of
 `Chat.broken` before a feed: no rule needs it, it only spares a zoom
 the whole log after a compaction's write failed.
 
-Sync commit: the model describes the code at **09efa7c**. To see if it
+Sync commit: the model describes the code at **c258251**. To see if it
 still does:
 
 ```sh
-git diff 09efa7c -- agentmem.go
-git diff 09efa7c -- agents.go chat.go subs.go | grep -nE 'logStep|appendRaw|freeName|failWrite|broken|func \(c \*Chat\) (pump|build|logMsgs|appendDay|saveView|flushNodes|idle)|stepHeads|parseSteps|openChatAs'
+git diff c258251 -- agentmem.go
+git diff c258251 -- agents.go chat.go subs.go | grep -nE 'appendStep|appendRaw|freeName|failWrite|broken|func \(c \*Chat\) (pump|build|logMsgs|appendDay|saveView|flushNodes|idle)|stepHeads|parseSteps|openChatAs'
 ```
 
 Empty output: the model still holds. Otherwise read the change against

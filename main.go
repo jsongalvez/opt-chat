@@ -352,13 +352,6 @@ func main() {
 	}
 }
 
-// zoom("Name") in the prompt: a subagent's chat as lines, or with
-// -agent-memory=false its whole log.
-const (
-	zoomAgentLines = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does\n"
-	zoomAgentWhole = "- zoom(\"Name\") gives an agent's whole chat\n"
-)
-
 // systemPrompt is the prompt for a chat whose instructions are in
 // agentsMD, with Opt's MCP servers' file when it has one, the wake and
 // owe tools listed when on, and zoom on subagents as -agent-memory says.

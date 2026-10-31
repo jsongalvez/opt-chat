@@ -55,9 +55,9 @@ gives the chats a turn at the compactions copies them under the map's
 lock and takes each chat's lock without it: a chat writing to disk holds
 up only its own subagent.
 
-Four locks, always taken in this order: a subagent's own, then the map of
-open subagents' chats, then a chat's, then the count of compactions
-running. Closing idle chats holds the map's lock, over closing their
+Five locks, always taken in this order: the subagents' (`Agent.mu`, held
+by a tell as it logs a step), then a subagent's own, then the map of open
+subagents' chats, then a chat's, then the count of compactions running. Closing idle chats holds the map's lock, over closing their
 files too, and only tries a subagent's own lock and its chat's, so it
 never waits against the order, nor on a chat writing a line to disk.
 

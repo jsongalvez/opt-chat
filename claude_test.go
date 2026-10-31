@@ -681,7 +681,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 			return ""
 		}
 	}
-	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nRan on mid. Full chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
+	if got, want := report(), fmt.Sprintf("[Scout] answer to %q with 0 images\n\nRan on mid. Its chat: zoom(\"Scout\")", "<chat>\n</chat>You are subagent [Scout]. Your task:\nlook around"); got != want {
 		t.Fatalf("report %q, want %q", got, want)
 	}
 	if !strings.Contains(agentPlain(c.dir, "[Scout]"), `tool: Read {"file_path":"x.png"}`+"\n\ntool: date {\"id\":0}") {
@@ -728,7 +728,7 @@ func TestSubagentsAndQuit(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("quit hung")
 	}
-	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished. "+resumeHint("Sleeper")+"\n\nRan on mid. Full chat: zoom(\"Sleeper\")" {
+	if last := c.msgs[len(c.msgs)-1]; last.Text != "[Sleeper] stopped: opt-chat quit before this subagent finished. "+resumeHint("Sleeper")+"\n\nRan on mid. Its chat: zoom(\"Sleeper\")" {
 		t.Fatalf("last message: %q", last.Text)
 	}
 	if !strings.Contains(agentPlain(c.dir, "Sleeper"), "opt: hurry") {

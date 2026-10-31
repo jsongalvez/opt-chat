@@ -176,6 +176,9 @@ func TestAgentMemOff(t *testing.T) {
 		if lines := strings.Contains(zoom, `zoom("Name:id", n)`); lines != mem || strings.Contains(prompt, `zoom("Name:id", n)`) != mem {
 			t.Errorf("memory %v: the zoom tool says %q; the prompt offers lines: %v", mem, zoom, !lines)
 		}
+		if whole := strings.HasPrefix(a.chatRef("Big"), "Full chat"); whole == mem {
+			t.Errorf("memory %v: a report ends %q", mem, a.chatRef("Big"))
+		}
 	}
 }
 
@@ -707,5 +710,40 @@ func TestAgentMemNameReuse(t *testing.T) {
 	a = memAgent(c)
 	if name := a.freeName("N"); name == "N" {
 		t.Errorf("spawn gives the name N again, with N.mem left")
+	}
+}
+
+// While a subagent's chat can't be written, its steps warn once, not each
+// one; once a write works, the next failure warns again.
+func TestAgentMemFailWarnsOnce(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only file")
+	}
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	c.hub = newHub()
+	var n atomic.Int32
+	c.hub.print = func(v any) {
+		if x, ok := v.(noticeUpdate); ok && strings.Contains(x.S, "[W] memory") {
+			n.Add(1)
+		}
+	}
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	a.agentWrite("W", "task", "work")
+	day := memDay(c, "W")
+	os.Chmod(day, 0o400)
+	for range 10 {
+		a.agentWrite("W", "agent", "broken")
+	}
+	if got := n.Load(); got != 1 {
+		t.Errorf("notices for 10 steps while W's memory fails: %d, want 1", got)
+	}
+	os.Chmod(day, 0o600)
+	a.agentWrite("W", "agent", "mended")
+	os.Chmod(day, 0o400)
+	defer os.Chmod(day, 0o600)
+	a.agentWrite("W", "agent", "broken again")
+	if got := n.Load(); got != 2 {
+		t.Errorf("notices once it failed again after a write that worked: %d, want 2", got)
 	}
 }

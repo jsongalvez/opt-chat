@@ -39,8 +39,9 @@ const (
 // log. A nil *agentMems is -agent-memory=false: steps go to the log only,
 // and zoom("Name") gives the whole log.
 //
-// Locks, always taken in this order: an agentMem's mu, then agentMems.mu,
-// then a Chat's mu, then jobGate.mu. closeIdleAgents, which holds
+// Locks, always taken in this order: Agent.mu (tell, tellNow and logTells
+// log a step holding it), then an agentMem's mu, then agentMems.mu, then a
+// Chat's mu, then jobGate.mu. closeIdleAgents, which holds
 // agentMems.mu, only tries an agentMem's mu, so it never waits against the
 // order.
 type agentMems struct {
@@ -75,6 +76,9 @@ type agentMem struct {
 	// entry. Not known, it is checked before a step: one cut short (a
 	// crash, a full disk) would take the next step's head for its text.
 	sealed bool
+	// Its failure was said: a write that fails again says nothing until
+	// one works. Read without mu, by its chat's failWrite.
+	warned atomic.Bool
 }
 
 // chatRole sets a chat's compactions apart by whose chat it is: the main
@@ -82,9 +86,10 @@ type agentMem struct {
 // warnings go to the main chat's page (notices), named. Read holding the
 // chat's mu.
 type chatRole struct {
-	sub     string   // the subagent's name; "": the main chat
-	gate    *jobGate // nil: the main chat with -agent-memory=false
-	notices *hub     // a subagent's chat's: the main chat's hub (its messages are not the page's)
+	sub     string       // the subagent's name; "": the main chat
+	gate    *jobGate     // nil: the main chat with -agent-memory=false
+	notices *hub         // a subagent's chat's: the main chat's hub (its messages are not the page's)
+	warned  *atomic.Bool // a subagent's chat's: its failure was said (agentMem.warned)
 }
 
 // take is whether a compaction may start; done, that one taken has ended.
@@ -218,19 +223,16 @@ func (m *agentMems) lock(name string) *agentMem {
 // and feeds it to its chat, holding the subagent's lock over both.
 func (m *agentMems) appendStep(name, path string, b []byte) error {
 	if m == nil {
-		if !endsBlank(path) { // as below: memory may be on after a restart
-			b = append([]byte("\n\n"), b...)
-		}
-		return appendRaw(path, b)
+		return appendRaw(path, sealed(path, b)) // memory may be on after a restart
 	}
 	am := m.lock(name)
-	if !am.sealed && !endsBlank(path) {
-		b = append([]byte("\n\n"), b...)
+	if !am.sealed {
+		b = sealed(path, b)
 	}
 	err := appendRaw(path, b)
 	am.sealed = err == nil
 	if err == nil {
-		if _, ferr := m.fed(name, am); ferr != nil && !errors.Is(ferr, errMemBroken) { // that one is said as it happens
+		if _, ferr := m.fed(name, am); ferr != nil && !errors.Is(ferr, errMemBroken) && !am.warned.Swap(true) { // that one is said as it happens
 			m.main.hub.notice("warn", "[%s] memory: %v", name, ferr)
 		}
 	}
@@ -257,8 +259,11 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	am.used.Store(time.Now().UnixNano())
 	m.closeBroken(am) // a compaction's write failed since: open it again from its files
 	if sc := am.c; sc != nil {
-		err := m.feed(name, am, sc)
-		return sc, cmp.Or(m.closeBroken(am), err)
+		err := cmp.Or(m.feed(name, am, sc), m.closeBroken(am))
+		if err == nil {
+			am.warned.Store(false)
+		}
+		return sc, err
 	}
 	dir := filepath.Join(m.main.dir, "agents")
 	if _, err := os.Stat(filepath.Join(dir, name+".log")); os.IsNotExist(err) {
@@ -266,7 +271,7 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	sc, err := openChatAs(filepath.Join(dir, name+".mem"), chatRole{sub: name, gate: &m.gate, notices: m.main.hub})
+	sc, err := openChatAs(filepath.Join(dir, name+".mem"), chatRole{sub: name, gate: &m.gate, notices: m.main.hub, warned: &am.warned})
 	if err != nil {
 		return nil, err
 	}
@@ -289,6 +294,7 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	sc.mu.Unlock()
 	am.c = sc
 	m.mu.Unlock()
+	am.warned.Store(false)
 	return sc, nil
 }
 
@@ -426,10 +432,12 @@ func agentPlain(dir, name string) string {
 	return string(plainSteps(b))
 }
 
-// logStep writes b, a step, to the log of the subagent name, and to its
-// memory.
-func (a *Agent) logStep(name string, b []byte) error {
-	return a.mems.appendStep(name, a.agentLog(name), b)
+// chatRef ends a subagent's report: where its chat is.
+func (a *Agent) chatRef(name string) string {
+	if a.mems == nil {
+		return fmt.Sprintf("Full chat: zoom(%q)", name)
+	}
+	return fmt.Sprintf("Its chat: zoom(%q)", name)
 }
 
 // ZoomAgent gives a subagent's chat as its view: lines that zoom opens as
@@ -492,6 +500,15 @@ func memFailed(name string, err error) string {
 		return fmt.Sprintf("[%s]'s memory failed: %v.", name, err)
 	}
 	return fmt.Sprintf("[%s]'s memory failed to open: %v.", name, err)
+}
+
+// sealed is b, a step, after a blank line if the log at path was cut
+// short in one: the step then starts an entry of its own.
+func sealed(path string, b []byte) []byte {
+	if endsBlank(path) {
+		return b
+	}
+	return append([]byte("\n\n"), b...)
 }
 
 // endsBlank is whether the log at path is empty or ends in a blank line,

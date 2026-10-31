@@ -106,9 +106,11 @@ var (
 		schema(nil, map[string]any{"at": str, "message": str, "cancel": num}))
 )
 
-// zoom's text on subagents: their chats as lines, or with
-// -agent-memory=false their whole logs.
+// zoom's text on subagents, in the tool and the prompt: their chats as
+// lines, or with -agent-memory=false their whole logs.
 const (
+	zoomAgentLines     = "- zoom(\"Name\") gives an agent's chat as lines, and zoom(\"Name:id\", n) opens\n  them as zoom(id, n) does\n"
+	zoomAgentWhole     = "- zoom(\"Name\") gives an agent's whole chat\n"
 	zoomDesc           = "Open the line id+n of the view into the two lines of n/2 under it; n = 1 gives the message whole, with its images. "
 	zoomAgentTool      = `zoom("Name") gives a subagent's chat as lines, and zoom("Name:id", n) opens its line id+n, as for the chat's.`
 	zoomAgentWholeTool = `zoom("Name") gives a subagent's whole chat.`
