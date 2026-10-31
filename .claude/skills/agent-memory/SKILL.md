@@ -63,12 +63,12 @@ failed open closes it: TestAgentMemWriteFails, disk full), and the check of
 `Chat.broken` before a feed: no rule needs it, it only spares a zoom
 the whole log after a compaction's write failed.
 
-Sync commit: the model describes the code at **c1c3465**. To see if it
+Sync commit: the model describes the code at **09efa7c**. To see if it
 still does:
 
 ```sh
-git diff c1c3465 -- agentmem.go
-git diff c1c3465 -- agents.go chat.go subs.go | grep -nE 'logStep|appendRaw|freeName|failWrite|broken|func \(c \*Chat\) (pump|build|logMsgs|appendDay|saveView|flushNodes|idle)|stepHeads|parseSteps|openChatAs'
+git diff 09efa7c -- agentmem.go
+git diff 09efa7c -- agents.go chat.go subs.go | grep -nE 'logStep|appendRaw|freeName|failWrite|broken|func \(c \*Chat\) (pump|build|logMsgs|appendDay|saveView|flushNodes|idle)|stepHeads|parseSteps|openChatAs'
 ```
 
 Empty output: the model still holds. Otherwise read the change against

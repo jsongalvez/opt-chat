@@ -291,7 +291,7 @@ func (a *Agent) TellUser(name, text string, atts []attachment, now bool) (string
 	t := tell{user: true, text: m.full(), msg: c.content(m)}
 	out, ok := "", false
 	if now {
-		out, ok = a.tellNow(name, t)
+		out, ok = a.tellNow(name, &t)
 	}
 	if !ok {
 		out, ok = a.tell(name, t)
@@ -410,23 +410,26 @@ func (a *Agent) logTells(name string, ts []tell) {
 // loopStep); between two of its turns, the interrupt finds nothing to cut
 // and t goes as the next. False when it is not at work in a way an
 // interrupt can cut (starting, compacting): t goes as a tell then.
-func (a *Agent) tellNow(name string, t tell) (string, bool) {
+func (a *Agent) tellNow(name string, t *tell) (string, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	p, h, s := a.running[name], a.halts[name], a.subs[name]
 	if p == nil || h == nil || s == nil || s.State != "working" {
 		return "", false
 	}
+	// Logged before the interrupt, so the log has it ahead of the echo of
+	// the call it cuts; if the interrupt fails, the tell that follows has
+	// it logged already.
+	a.logTells(name, []tell{*t})
+	t.logged = true
 	if !h.cut && !p.control("opt-now", map[string]any{"subtype": "interrupt"}) {
 		return "", false
 	}
 	h.cut = true
-	a.logTells(name, []tell{t})
-	t.logged = true
 	if a.looping(name) {
-		a.held[name] = append(a.held[name], t)
+		a.held[name] = append(a.held[name], *t)
 	} else {
-		h.now = append(h.now, t)
+		h.now = append(h.now, *t)
 	}
 	return fmt.Sprintf("Sent: [%s] was interrupted to read it now.", name), true
 }
