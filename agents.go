@@ -106,15 +106,7 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 		return "opt-chat is quitting."
 	}
 	a.mu.Lock()
-	base := name
-	for n := 2; ; n++ { // names are forever: zoom("Name") opens its log
-		if _, taken := a.running[name]; !taken {
-			if _, err := os.Stat(a.agentLog(name)); os.IsNotExist(err) {
-				break
-			}
-		}
-		name = fmt.Sprintf("%s-%d", base, n)
-	}
+	name = a.freeName(name)
 	a.running[name] = nil // reserved until its call starts
 	a.subLocked(name, func(s *sub) {
 		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant}
@@ -453,7 +445,7 @@ func (a *Agent) agentWrite(name, kind, text string) { a.agentWriteRef(name, kind
 // and, on a tool call and its echo, the call's id: see stepHead.
 func (a *Agent) agentWriteRef(name, kind, text, ref string) {
 	s := step{Kind: kind, Text: text, At: nowMs(), Ref: ref}
-	if err := appendRaw(a.agentLog(name), []byte(stepHead(s)+text+"\n\n")); err != nil {
+	if err := a.logStep(name, []byte(stepHead(s)+text+"\n\n")); err != nil {
 		warn("[%s] log: %v", name, err)
 	}
 	a.chat.hub.send(stepUpdate{T: "step", Name: name, Step: s})
@@ -1114,13 +1106,18 @@ const compactAsk = "/compact Keep what is needed to go on with your task: what w
 // goOn sets a subagent compacted mid-task to work again.
 const goOn = "It was compacted in the middle of the task, between two steps: go on with it where you left off."
 
-// ZoomAgent gives a subagent's whole chat, its steps' times and ids left
-// out.
-func (c *Chat) ZoomAgent(name string) string {
-	name = agentName(name)
-	b, err := os.ReadFile(filepath.Join(c.dir, "agents", name+".log"))
-	if name == "" || err != nil {
-		return fmt.Sprintf("No subagent [%s].", name)
+// freeName is base, or base-2, base-3...: the first no subagent has had.
+// Names are forever: zoom("Name") opens its log. a.mu held.
+func (a *Agent) freeName(base string) string {
+	name := base
+	for n := 2; ; n++ {
+		if _, taken := a.running[name]; !taken {
+			_, lerr := os.Stat(a.agentLog(name))
+			_, merr := os.Stat(strings.TrimSuffix(a.agentLog(name), ".log") + ".mem") // its log gone by hand: the chat would take its steps for the old ones
+			if os.IsNotExist(lerr) && os.IsNotExist(merr) {
+				return name
+			}
+		}
+		name = fmt.Sprintf("%s-%d", base, n)
 	}
-	return string(plainSteps(b))
 }
