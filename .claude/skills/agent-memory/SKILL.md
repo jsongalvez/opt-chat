@@ -69,7 +69,7 @@ formal/agentmem/mutants.sh    # ~3 min; every line must say "caught"
 formal/agentmem/check.sh MC.cfg MCCrash.cfg   # the code at b5cc5bb: the four bugs
 ```
 
-`check.sh` downloads tla2tools 1.8.0 once (checked by sha256) into
+`check.sh` downloads tla2tools 1.7.4, the latest stable release, once (checked by sha256) into
 `~/.cache/tla`, needs Java 11+, and refuses a run under 10,000 states: a
 step that can never be taken passes every property. A FAIL prints the
 counterexample as the actions taken; `TRACE=1` prints whole states.
