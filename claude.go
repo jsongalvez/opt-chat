@@ -38,14 +38,20 @@ type Agent struct {
 	amodel, aeffort string     // subagents
 	cmodel, ceffort string     // compactions
 	cnice           int        // compactions run under nice -n this (0: as turns)
-	cbare           bool       // compactions on another model than turns list no tools
+	cbare           bool       // memory summary calls on a different model from the turns get no tools
 	ccopied         bool       // ask again for a line with tokens from <chat> its input lacks (-compact-copied)
 	relay           *relay     // -experimental-relay: see relay.go; nil: off
 	perm, cwd       string
 	tools           string
+	claude          string            // the claude command: "" for the one on PATH
+	optMCP          string            // Opt's own MCP servers' file, which calls with the user's setup load: see optmcp.go; "": none
+	claudeJSON      string            // Claude Code's config, whose servers they keep out
+	files           string            // where @ completes paths from
 	ownConfig       bool              // turns and subagents get the user's Claude Code skills, plugins and MCP servers
 	claudeMd        bool              // and the CLAUDE.md files of the folders they work in, never the user's own
 	mcpOff          []string          // of those servers, the ones the user turned off here
+	mcpAgents       []string          // and those for subagents only: see mcpOffLocked
+	rest            time.Duration     // agentRest, when set
 	skillsSet       map[string]string // the user's skills' states set here: on, off, ...
 	pluginsSet      map[string]bool   // and plugins turned on or off here, by name@marketplace
 	skillsListed    []skill           // the skills Claude Code listed last, in its own states
@@ -55,6 +61,7 @@ type Agent struct {
 	resting         map[string]*rest  // subagents that have reported, still able to go on: see Tell
 	mcpUp           []string          // the servers connected when the last call sent its view: see mcpSettle
 	mcpSeen         []string          // and those listed then
+	mcpCounted      mcpCounts         // what each server takes of the context, as last counted: see countMCP
 
 	report     func(text string) // hands an agent's report to the chat
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
@@ -302,6 +309,7 @@ type proc struct {
 
 	declined  atomic.Bool // the user said no to a tool call, which stops the call
 	who       string      // a subagent's name; empty for the turn
+	deny      []string    // the MCP servers kept out of it: see ownSettings
 	onRequest func(event) // takes Claude Code's control requests; nil: refused
 	onLimits  func(limitInfo)
 	onResult  func(event)
@@ -329,11 +337,21 @@ const (
 // ownSettings are a call's settings over the user's own: never their hooks
 // or Claude Code's auto-compaction, but for a subagent's window (see
 // start), nor their own CLAUDE.md when repos' ones load; their skills and
-// plugins on or off as set here. Under a.mu.
-func (a *Agent) ownSettings(window int) string {
+// plugins on or off as set here; deny's MCP servers kept out of the call.
+// Claude Code's mcp_toggle would keep a server off in the user's own
+// config for the folder (~/.claude.json), for every later call and their
+// own sessions there; deniedMcpServers holds for this call alone. Under a.mu.
+func (a *Agent) ownSettings(window int, deny []string) string {
 	var excludes []string
 	if a.claudeMd {
 		excludes = []string{filepath.Join(claudeConfigDir(), "CLAUDE.md")}
+	}
+	type server struct {
+		Name string `json:"serverName"`
+	}
+	var denied []server
+	for _, name := range deny {
+		denied = append(denied, server{name})
 	}
 	b, _ := json.Marshal(struct {
 		DisableAllHooks    bool              `json:"disableAllHooks"`
@@ -342,7 +360,8 @@ func (a *Agent) ownSettings(window int) string {
 		ClaudeMdExcludes   []string          `json:"claudeMdExcludes,omitzero"`
 		SkillOverrides     map[string]string `json:"skillOverrides,omitzero"`
 		EnabledPlugins     map[string]bool   `json:"enabledPlugins,omitzero"`
-	}{true, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet}, json.Deterministic(true))
+		DeniedMcpServers   []server          `json:"deniedMcpServers,omitzero"`
+	}{true, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet, denied}, json.Deterministic(true))
 	return string(b)
 }
 
@@ -414,16 +433,24 @@ const noTools = `{"autoCompactEnabled":false,"hooks":{"PreToolUse":[{"matcher":"
 // settings: the chat never ends, and its view never needs it. extra are a
 // subagent's session flags.
 func (a *Agent) start(ctx context.Context, model, effort string, r role, extra ...string) (*proc, error) {
-	return a.startCall(ctx, model, effort, r, 0, extra...)
+	return a.startCall(ctx, model, effort, r, 0, "", extra...)
 }
 
 // startAgent starts a subagent's call. Past window, Claude Code compacts
 // its context between two steps, never in one (see runAgent); 0: never.
-func (a *Agent) startAgent(ctx context.Context, model, effort string, window int, extra ...string) (*proc, error) {
-	return a.startCall(ctx, model, effort, roleAgent, window, extra...)
+func (a *Agent) startAgent(ctx context.Context, name, model, effort string, window int, extra ...string) (*proc, error) {
+	return a.startCall(ctx, model, effort, roleAgent, window, name, extra...)
 }
 
-func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, extra ...string) (p *proc, err error) {
+// claudeCmd is the claude command calls run.
+func (a *Agent) claudeCmd() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return cmp.Or(a.claude, "claude")
+}
+
+// startCall starts a call; who is the subagent's name, "" for the chat's.
+func (a *Agent) startCall(ctx context.Context, model, effort string, r role, window int, who string, extra ...string) (p *proc, err error) {
 	if r != roleAgent {
 		window = 0 // the chat's calls never compact
 	}
@@ -438,10 +465,30 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 			done()
 		}
 	}()
+	if err := os.MkdirAll(a.cwd, 0o700); err != nil { // the system cleans its temp folder, where it is by default
+		return nil, err
+	}
+	var ccDeny []string
+	optMCP := ""
+	if a.optMCP != "" && r != roleCompact {
+		var ok bool
+		if ccDeny, ok = ccDenied(a.claudeJSON, a.cwd, a.optMCP); ok {
+			optMCP = a.optMCP
+		}
+	}
 	a.mu.Lock()
 	mcp, perm, allowed := a.mcpConfig, a.perm, append([]string{"mcp__opt__zoom", "mcp__opt__date", "mcp__opt__search", "mcp__opt__spawn", "mcp__opt__tell", "mcp__opt__wake"}, a.allowed...)
 	dirs, own := slices.Clone(a.dirs), a.ownConfig && r != roleCompact
-	settings, claudeMd := a.ownSettings(window), a.claudeMd
+	var deny []string
+	if r != roleControl { // the page's lists every server as it is
+		deny = a.mcpOffLocked(who)
+	}
+	for _, name := range ccDeny {
+		if !slices.Contains(deny, name) {
+			deny = append(deny, name)
+		}
+	}
+	settings, claudeMd := a.ownSettings(window, deny), a.claudeMd
 	system := a.systemNow()
 	bare := r == roleCompact && a.cbare && model != a.model
 	a.mu.Unlock()
@@ -466,11 +513,18 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		tools = ""
 	}
 	if own {
-		tools = withTools(tools, "Skill", "ToolSearch") // ToolSearch: MCP servers' tools load as needed, not in every prompt
+		// ToolSearch: MCP servers' tools load as needed, not in every prompt.
+		// Artifact publishes a page to the user's claude.ai account, as in
+		// their own Claude Code; in a call like this one only with
+		// CLAUDE_CODE_ARTIFACT (below).
+		tools = withTools(tools, "Skill", "ToolSearch", "Artifact")
 	}
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
-		"--model", model, "--system-prompt", system, "--tools", tools, "--mcp-config", mcp,
-		"--permission-mode", perm, "--allowedTools", strings.Join(allowed, ",")}
+		"--model", model, "--system-prompt", system, "--tools", tools, "--mcp-config", mcp}
+	if optMCP != "" { // its servers replace the chat's own by the same name
+		args = append(args, optMCP)
+	}
+	args = append(args, "--permission-mode", perm, "--allowedTools", strings.Join(allowed, ","))
 	if r == roleAgent { // saved, so it can be resumed: see resume.go
 		args = append(args, extra...)
 	} else {
@@ -507,9 +561,9 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	case roleTurn, roleAgent: // the reply streams to the pages as it is written
 		args = append(args, "--include-partial-messages")
 	}
-	name := "claude"
+	name := a.claudeCmd()
 	if r == roleCompact && a.cnice > 0 { // background work: turns keep the CPU when the machine is busy
-		name, args = "nice", append([]string{"-n", strconv.Itoa(a.cnice), "claude"}, args...)
+		name, args = "nice", append([]string{"-n", strconv.Itoa(a.cnice), name}, args...)
 	}
 	cmd := exec.CommandContext(ctx, name, args...)
 	// Stopped gently, so Claude Code can stop what its tools started, and so
@@ -529,7 +583,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		// Tool search always: left to decide, Claude Code defers MCP tools or
 		// not by which servers have connected by each request, so the ack and
 		// the turn after it disagreed, and the view was written again.
-		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true")
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "ENABLE_TOOL_SEARCH=true", "CLAUDE_CODE_ARTIFACT=1")
 		if claudeMd { // not even from a Claude Code that started opt-chat
 			cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool { return strings.HasPrefix(kv, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=") })
 		} else {
@@ -539,7 +593,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	// The system prompt and tools head the cache prefix: a change to
 	// AGENTS.md leaves no entry cached for the old one.
 	prefix := fmt.Sprintf("%s %s %x", model, effort, sha256.Sum256([]byte(system+"\x00"+tools)))
-	p = &proc{prefix: prefix, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits}
+	p = &proc{prefix: prefix, ctx: ctx, cmd: cmd, done: done, onLimits: a.noteLimits, who: who, deny: deny}
 	cmd.Stderr = &p.stderr
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		return nil, err
@@ -554,7 +608,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		return nil, err
 	}
 	pid := cmd.Process.Pid
-	children.Store(pid, true)
+	children.Store(pid, a)
 	if r == roleTurn || r == roleAgent {
 		p.onRequest = func(e event) { a.request(p, e) }
 		a.modeMu.Lock()
@@ -579,9 +633,6 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 			}
 		}
 	}
-	if own && r == roleControl { // a turn's or subagent's waits for its servers: see mcpSettle
-		go a.mcpApply(p)
-	}
 	if r != roleControl {
 		p.onResult = func(e event) { a.noteSpend(p, r, e) }
 		if slices.Contains(extra, "--resume") {
@@ -601,13 +652,17 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	return p, nil
 }
 
-// children are the calls running, by pid. In process groups of their own,
-// they would outlive opt-chat dying on an error: fatal stops them first.
+// children are the calls running, by pid, each with the Agent that
+// started it. In process groups of their own, they would outlive opt-chat
+// dying on an error: fatal stops them first.
 var children sync.Map
 
-func stopChildren() {
-	children.Range(func(pid, _ any) bool {
-		syscall.Kill(-pid.(int), syscall.SIGTERM) // its group: its tools too
+// stopChildren stops the calls of owner, or all of them for nil.
+func stopChildren(owner *Agent) {
+	children.Range(func(pid, a any) bool {
+		if owner == nil || a == owner {
+			syscall.Kill(-pid.(int), syscall.SIGTERM) // its group: its tools too
+		}
 		return true
 	})
 }
@@ -635,14 +690,17 @@ func (a *Agent) quit() {
 // call to a Claude Code session that launched opt-chat. With them, calls
 // got that session's token-budget reminder in some requests and not in
 // others, so no two prompts matched, and inherited its effort.
-func childEnv() []string {
+func childEnv() []string { return childEnvOf(os.Environ()) }
+
+// childEnvOf is childEnv, from the environment environ.
+func childEnvOf(environ []string) []string {
 	// Those of a Claude Code that started opt-chat, and the user's own
 	// compaction window, which would beat a subagent's settings.
 	inherited := []string{"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
 		"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
 		"CLAUDE_CODE_EXECPATH", "CLAUDE_PID", "CLAUDE_EFFORT", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS",
 		"CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"}
-	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+	env := slices.DeleteFunc(slices.Clone(environ), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
 		return slices.Contains(inherited, k)
 	})

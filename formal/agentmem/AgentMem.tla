@@ -2,18 +2,8 @@
 (* Subagents' memory (agentmem.go): each subagent's log fed into a chat of
    its own, zoomed, pumped, closed when idle, across a crash. Every action
    is one step of the code between two lock operations; its comment names
-   the code. Fixes names the fixes made after b5cc5bb:
-     "pump"   agentMems.pump copies the chats under m.mu, locks each without it
-     "close"  closeIdle only tries a chat's mu
-     "seal"   appendStep ends a log cut short with a blank line before a step
-     "notice" a memory that fails to open says so on the page, and in zoom
-   and the fixes made after 364d549:
-     "offseal" with -agent-memory=false, appendStep seals a log cut short too
-     "parts"   a chat opened again ends the step whose parts a crash cut off
-     "nofatal" a write to a subagent's chat that fails stops that chat's
-               writes and closes it, to be opened again from its files;
-               opt-chat goes on (the main chat's still stops it: fatal)
-     "reuse"   spawn takes no name with a .log or a .mem
+   the code. mutants.sh puts back, one at a time, bugs this model found
+   while the code was written, and expects a property to catch each.
 
    A restart may turn -agent-memory either way (OffSwitch). Off, a step
    goes to the log alone; on again, the chat is fed from the log.
@@ -34,8 +24,7 @@ CONSTANTS Subs,      \* subagents' names
           MaxCrash,  \* crashes of opt-chat, or failed writes
           MaxFail,   \* compactions and opens that fail
           OpenMax,   \* agentOpenMax
-          OffSwitch, \* whether a restart may turn -agent-memory either way
-          Fixes      \* which fixes the code has: {} is the code at b5cc5bb
+          OffSwitch  \* whether a restart may turn -agent-memory either way
 
 NoLock == <<"", "">>                     \* no lock wanted
 None == <<"none", "">>                   \* no holder; no zoom result yet
@@ -105,7 +94,8 @@ Chunk(s) == SubSeq(Unread(s), 1, Ends(Unread(s)))
 \* What feed logs: the chunk's steps, less those the chat holds when opened.
 New(s) == LET st == Parse(Chunk(s), TRUE)
           IN IF read[s] = 0 THEN SubSeq(st, Held(chat[s]) + 1, Len(st)) ELSE st
-ToFeed(s) == (IF read[s] = 0 /\ "parts" \in Fixes THEN Missing(chat[s]) ELSE <<>>) \o Expand(New(s))
+\* A chat opened again first ends the step whose parts a crash cut off.
+ToFeed(s) == (IF read[s] = 0 THEN Missing(chat[s]) ELSE <<>>) \o Expand(New(s))
 Feed(s) == /\ chat' = [chat EXCEPT ![s] = @ \o ToFeed(s)]
            /\ read' = [read EXCEPT ![s] = @ + Len(Chunk(s))]
 
@@ -118,7 +108,6 @@ WantOf(a) ==
     [] pc[a] = "view"  -> SC(tgt[a])
     [] pc[a] = "bsc"   -> SC(a[2])
     [] pc[a] = "psc"   -> SC(tgt[a])
-    [] pc[a] = "cisc" /\ "close" \notin Fixes -> SC(tgt[a])
     [] pc[a] = "ciam"  -> AM(tgt[a])
     [] OTHER -> NoLock
 
@@ -142,11 +131,11 @@ LockAm(a) == /\ pc[a] = "am" /\ Free(AM(Subj(a))) /\ Take(a, {AM(Subj(a))})
              /\ Go(a, IF a[1] = "w" THEN "append" ELSE "feed")
              /\ UNCHANGED <<log, chat, read, sealed, ents, open, busy, tgt, plist, steps, crashes, fails, nextId, noticed, failed, zres, broken, killed, on>>
 
-\* Its own I/O on its log, holding its am.mu.
+\* Its own I/O on its log, holding its am.mu. A log cut short gets a blank
+\* line before the step: on, unless this entry wrote its end; off, always.
 Written(s) == LET full == [t |-> "full", id |-> nextId]
                   ends == log[s] = <<>> \/ log[s][Len(log[s])].t \in {"full", "seal"}
-              IN IF \/ on /\ "seal" \in Fixes /\ ~sealed[s] /\ ~ends
-                    \/ ~on /\ "offseal" \in Fixes /\ ~ends THEN <<[t |-> "seal"], full>> ELSE <<full>>
+              IN IF ~ends /\ (~on \/ ~sealed[s]) THEN <<[t |-> "seal"], full>> ELSE <<full>>
 
 \* Off: agentWriteRef → appendStep on a nil agentMems: appendRaw alone.
 StartWrite(s) == /\ pc[W(s)] = "idle" /\ steps[s] < MaxSteps /\ Go(W(s), IF on THEN "lock" ELSE "append")
@@ -183,9 +172,9 @@ FeedStep(a) ==
         /\ UNCHANGED <<failed, fails, noticed, zres, hold, open, broken, on>>
      \/ /\ s \notin open /\ fails < MaxFail
         /\ fails' = fails + 1 /\ failed' = TRUE
-        \* appendStep: warn() to the terminal; ZoomAgent: "No subagent [Name]."
-        /\ noticed' = ("notice" \in Fixes)
-        /\ zres' = IF a = Z THEN (IF "notice" \notin Fixes THEN <<"no such subagent", "">> ELSE <<"error", "">>) ELSE zres
+        \* said on the page; ZoomAgent says why
+        /\ noticed' = TRUE
+        /\ zres' = IF a = Z THEN <<"error", "">> ELSE zres
         /\ Give({AM(s)}) /\ Go(a, IF a = Z THEN "idle" ELSE "ci")
         /\ UNCHANGED <<chat, read, open, broken, on>>
   /\ UNCHANGED <<log, sealed, ents, busy, tgt, plist, steps, crashes, nextId, killed, on>>
@@ -201,19 +190,15 @@ LogIO(a) == LET s == Subj(a) IN
                  ELSE Feed(s) /\ UNCHANGED <<open, broken, on>>
             /\ UNCHANGED <<log, sealed, ents, busy, tgt, plist, steps, crashes, fails, nextId, noticed, failed, zres, killed, on>>
 \* logMsgs' write failing (a full disk): its first k lines are on disk.
-\* Fixed, fed closes the chat, says so, and the step's write goes on; zoom
-\* gives the whole log. Not fixed, appendDay is fatal.
+\* fed closes the chat, says so, and the step's write goes on; zoom gives
+\* the whole log. opt-chat goes on (the main chat's failed writes stop it).
 MemFail(a) == LET s == Subj(a) IN
   /\ pc[a] = "logio" /\ ~broken[s] /\ fails < MaxFail /\ fails' = fails + 1 /\ failed' = TRUE
-  /\ \E k \in 0..(Len(ToFeed(s)) - 1) :
-       IF "nofatal" \in Fixes
-         THEN /\ chat' = [chat EXCEPT ![s] = @ \o SubSeq(ToFeed(s), 1, k)]
-              /\ open' = open \ {s} /\ read' = [read EXCEPT ![s] = 0] /\ noticed' = TRUE
-              /\ Give({SC(s), AM(s)}) /\ Go(a, IF a = Z THEN "idle" ELSE "ci")
-              /\ zres' = IF a = Z THEN <<"plain", "">> ELSE zres
-              /\ UNCHANGED <<log, sealed, ents, busy, tgt, plist, steps, crashes, nextId, on, broken, killed>>
-         ELSE /\ chat' = [chat EXCEPT ![s] = @ \o SubSeq(ToFeed(s), 1, k)]
-              /\ killed' = TRUE /\ Restart /\ UNCHANGED <<log, noticed, zres, on, crashes, nextId, steps>>
+  /\ \E k \in 0..(Len(ToFeed(s)) - 1) : chat' = [chat EXCEPT ![s] = @ \o SubSeq(ToFeed(s), 1, k)]
+  /\ open' = open \ {s} /\ read' = [read EXCEPT ![s] = 0] /\ noticed' = TRUE
+  /\ Give({SC(s), AM(s)}) /\ Go(a, IF a = Z THEN "idle" ELSE "ci")
+  /\ zres' = IF a = Z THEN <<"plain", "">> ELSE zres
+  /\ UNCHANGED <<log, sealed, ents, busy, tgt, plist, steps, crashes, nextId, on, broken, killed>>
 OpenSet(a) == LET s == Subj(a) IN
               /\ pc[a] = "openm" /\ Free(MM)
               /\ open' = open \cup {s}
@@ -234,10 +219,10 @@ CloseIdle(a) ==
 \* takes this step; mutants.sh puts it in to show NoDeadlock can fail.
 CloseAm(a) == /\ pc[a] = "ciam" /\ Free(AM(tgt[a])) /\ Take(a, {AM(tgt[a])}) /\ Go(a, "cisc")
               /\ UNCHANGED <<log, chat, read, sealed, ents, open, busy, tgt, plist, steps, crashes, fails, nextId, noticed, failed, zres, broken, killed, on>>
-\* sc.mu.Lock(); with "close", sc.mu.TryLock(), as for am.mu.
+\* sc.mu.TryLock(), as for am.mu.
 CloseSc(a) ==
   LET t == tgt[a] IN
-  /\ pc[a] = "cisc" /\ ("close" \notin Fixes => Free(SC(t)))
+  /\ pc[a] = "cisc"
   /\ IF Free(SC(t)) /\ ~busy[t]
        THEN ents' = ents \ {t} /\ open' = open \ {t} /\ read' = [read EXCEPT ![t] = 0] /\ sealed' = [sealed EXCEPT ![t] = FALSE]
        ELSE UNCHANGED <<ents, open, read, sealed, broken, killed, on>>
@@ -254,16 +239,15 @@ View == /\ pc[Z] = "view" /\ Free(SC(tgt[Z])) /\ Go(Z, "idle")
         /\ zres' = <<"view", IF tgt[Z] \in open /\ Missing(chat[tgt[Z]]) # <<>> THEN "torn" ELSE "">>
         /\ UNCHANGED <<log, chat, read, sealed, ents, open, busy, hold, tgt, plist, steps, crashes, fails, nextId, noticed, failed, broken, killed, on>>
 
-(* agentMems.pump: m.mu over every chat's mu; with "pump", the chats
-   copied under m.mu and their mus taken without it. *)
+(* agentMems.pump: the chats copied under m.mu, their mus taken without it. *)
 StartPump == /\ pc[P] = "idle" /\ open # {} /\ (\E s \in open : ~busy[s] /\ chat[s] # <<>>)
              /\ Free(MM) /\ plist' = open
-             /\ IF "pump" \notin Fixes THEN Take(P, {MM}) ELSE UNCHANGED hold
+             /\ UNCHANGED hold
              /\ Go(P, "pnext")
              /\ UNCHANGED <<log, chat, read, sealed, ents, open, busy, tgt, steps, crashes, fails, nextId, noticed, failed, zres, broken, killed, on>>
 PumpNext == /\ pc[P] = "pnext"
             /\ IF plist = {}
-                 THEN Go(P, "idle") /\ (IF "pump" \notin Fixes THEN Give({MM}) ELSE UNCHANGED hold) /\ UNCHANGED <<tgt, plist, broken, killed, on>>
+                 THEN Go(P, "idle") /\ UNCHANGED hold /\ UNCHANGED <<tgt, plist, broken, killed, on>>
                  ELSE \E t \in plist : tgt' = [tgt EXCEPT ![P] = t] /\ plist' = plist \ {t} /\ Go(P, "psc") /\ UNCHANGED hold
             /\ UNCHANGED <<log, chat, read, sealed, ents, open, busy, steps, crashes, fails, nextId, noticed, failed, zres, broken, killed, on>>
 \* Chat.pump under its mu: a compaction starts (jobGate.take).
@@ -283,13 +267,11 @@ BuildIO(s) == /\ pc[B(s)] = "bio" /\ Give({SC(s)}) /\ Go(B(s), "idle")
               /\ \/ UNCHANGED <<fails, failed, noticed, broken, killed, on>>
                  \/ fails < MaxFail /\ fails' = fails + 1 /\ failed' = TRUE /\ noticed' = TRUE
               /\ UNCHANGED <<log, chat, read, sealed, ents, open, tgt, plist, steps, crashes, nextId, zres, broken, killed, on>>
-\* flushNodes' or saveView's write failing: fixed, the chat stops writing.
+\* flushNodes' or saveView's write failing: the chat stops writing.
 BuildFail(s) == /\ pc[B(s)] = "bio" /\ fails < MaxFail /\ fails' = fails + 1 /\ failed' = TRUE
-                /\ IF "nofatal" \in Fixes
-                     THEN /\ broken' = [broken EXCEPT ![s] = TRUE] /\ noticed' = TRUE
-                          /\ busy' = [busy EXCEPT ![s] = FALSE] /\ Give({SC(s)}) /\ Go(B(s), "idle")
-                          /\ UNCHANGED <<log, chat, read, sealed, ents, open, tgt, plist, steps, crashes, nextId, zres, killed, on>>
-                     ELSE killed' = TRUE /\ Restart /\ UNCHANGED <<log, chat, noticed, zres, on, crashes, nextId, steps>>
+                /\ broken' = [broken EXCEPT ![s] = TRUE] /\ noticed' = TRUE
+                /\ busy' = [busy EXCEPT ![s] = FALSE] /\ Give({SC(s)}) /\ Go(B(s), "idle")
+                /\ UNCHANGED <<log, chat, read, sealed, ents, open, tgt, plist, steps, crashes, nextId, zres, killed, on>>
 
 (* opt-chat dies (or /reload execs, or a full disk makes appendDay fatal):
    what is on disk stays. A crash in a write to a log leaves it cut short;
@@ -308,8 +290,9 @@ Crash == /\ crashes < MaxCrash /\ crashes' = crashes + 1
          /\ UNCHANGED <<steps, failed, fails, noticed, zres, killed>>
 
 \* The name's log gone (by hand), its .mem left: a new subagent spawned
-\* under the name. With "reuse" spawn picks another name.
-Reuse(s) == /\ "reuse" \notin Fixes /\ crashes < MaxCrash /\ crashes' = crashes + 1
+\* under the name. No code takes this step: spawn skips a name with a .log
+\* or a .mem. mutants.sh puts it in to show ChatIsLog can fail.
+Reuse(s) == /\ crashes < MaxCrash /\ crashes' = crashes + 1
             /\ log[s] # <<>> /\ \A a \in Actors : pc[a] = "idle"
             /\ log' = [log EXCEPT ![s] = <<>>] /\ steps' = [steps EXCEPT ![s] = 0]
             /\ Restart
@@ -334,7 +317,7 @@ Run == \/ \E s \in Subs : StartWrite(s) \/ WriteStep(s) \/ TornWrite(s) \/ Actor
                           \/ BuildEnd(s) \/ BuildSc(s) \/ BuildIO(s) \/ BuildFail(s)
        \/ StartZoom \/ Actor(Z) \/ View \/ ZoomAgain
        \/ StartPump \/ PumpNext \/ PumpSc
-Next == Run \/ Crash \/ \E s \in Subs : Reuse(s)
+Next == Run \/ Crash
 
 Spec == Init /\ [][Next]_vars
 

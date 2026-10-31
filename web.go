@@ -288,7 +288,7 @@ type request struct {
 	Mode   string       `json:"mode"`   // mode: the permission mode
 	Allow  bool         `json:"allow"`  // answer: yes
 	Always bool         `json:"always"` // answer: yes, and don't ask again
-	Action string       `json:"action"` // mcp: on, off, reconnect, signin; skills: set; plugins: on, off; empty: list
+	Action string       `json:"action"` // mcp: on, off, agents (for subagents only), reconnect, signin; skills: set; plugins: on, off; empty: list
 	Name   string       `json:"name"`   // mcp, skills: which; steps, tellAgent, agentContext, compactAgent: the subagent's
 	State  string       `json:"state"`  // skills: on, off, name-only, user-invocable-only
 	Mine   bool         `json:"mine"`   // find: the user's own messages alone
@@ -332,6 +332,7 @@ type (
 		Name    string      `json:"name,omitzero"`
 		Action  string      `json:"action,omitzero"` // the action answered; empty: a list asked for
 		Error   string      `json:"error,omitzero"`
+		Window  int         `json:"window,omitzero"` // the context window the servers' tokens are a share of; 0: not counted
 	}
 	filesReply struct {
 		T     string           `json:"t"` // files: the @ menu's
@@ -650,7 +651,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		}
 		return modelsReply{T: "models", Models: ms}
 	case "files":
-		items := fileSuggestions(a.cwd, req.Text)
+		items := fileSuggestions(a.files, req.Text)
 		if items == nil {
 			items = []fileSuggestion{}
 		}
@@ -667,8 +668,8 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		var err error
 		r := mcpReply{T: "mcp", Name: req.Name, Action: req.Action}
 		switch req.Action {
-		case "on", "off":
-			err = a.setMCP(ctx, req.Name, req.Action == "on")
+		case "on", "off", "agents":
+			err = a.setMCP(ctx, req.Name, req.Action)
 		case "reconnect":
 			err = a.mcpReconnect(ctx, req.Name)
 		case "signin":
@@ -680,6 +681,7 @@ func (w *webServer) serveSlow(ctx context.Context, req request) any {
 		if r.Servers, err = a.mcpServers(ctx); err != nil {
 			r.Servers, r.Error = []mcpServer{}, cmp.Or(r.Error, err.Error())
 		}
+		r.Window = a.mcpWindowNow()
 		return r
 	case "plugins":
 		if !a.ownConfig {

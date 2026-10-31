@@ -94,25 +94,26 @@ type failure struct {
 
 // Chat is the log, the tree and both views. All fields are guarded by mu.
 type Chat struct {
-	dir     string
-	lock    *os.File // held for the life of the process: if collected, its finalizer would unlock
-	mu      sync.Mutex
-	msgs    []Msg
-	asides  []Aside // side questions: never in msgs, see btw.go
-	tree    map[key]string
-	redo    map[key]bool     // built lines to build again: see Node.Redo
-	view    view             // what turns see
-	cview   view             // what compactions see
-	queued  map[key]bool     // waiting in ready0/readyM or running
-	busy    map[key]bool     // running
-	failing map[key]*failure // lines whose compaction failed, until built
-	ready0  []int            // messages whose line needs a model call, in order
-	readyM  []key            // merges whose line needs a model call
-	written int              // lines a model has built in this run
-	jobs    int              // compactions running at once
-	unsaved []any            // nodes built and not written yet: see flushNodes
-	changed chan struct{}
-	hub     *hub // where what happens is shown; nil: nowhere
+	dir                 string
+	lock                *os.File // held for the life of the process: if collected, its finalizer would unlock
+	mu                  sync.Mutex
+	msgs                []Msg
+	settleFor, retryFor time.Duration // settleWait and retryIn, when set; under mu
+	asides              []Aside       // side questions: never in msgs, see btw.go
+	tree                map[key]string
+	redo                map[key]bool     // built lines to build again: see Node.Redo
+	view                view             // what turns see
+	cview               view             // what compactions see
+	queued              map[key]bool     // waiting in ready0/readyM or running
+	busy                map[key]bool     // running
+	failing             map[key]*failure // lines whose compaction failed, until built
+	ready0              []int            // messages whose line needs a model call, in order
+	readyM              []key            // merges whose line needs a model call
+	written             int              // lines a model has built in this run
+	jobs                int              // compactions running at once
+	unsaved             []any            // nodes built and not written yet: see flushNodes
+	changed             chan struct{}
+	hub                 *hub // where what happens is shown; nil: nowhere
 	// compact builds one line with a model; set before the first pump, nil
 	// again at quit.
 	compact compactor
@@ -120,7 +121,7 @@ type Chat struct {
 	broken  error    // a subagent's chat's write failed: it writes no more (failWrite)
 }
 
-func openChat(dir string) (*Chat, error) { return openChatAs(dir, mainRole{}) }
+func openChat(dir string) (*Chat, error) { return openChatAs(dir, chatRole{}) }
 
 // openChatAs opens the chat in dir as role's: a subagent's chat's failed
 // writes stop it, not opt-chat (failWrite).
@@ -139,6 +140,12 @@ func openChatAs(dir string, role chatRole) (*Chat, error) {
 		lock.Close()
 		return nil, fmt.Errorf("another opt-chat owns %s", dir)
 	}
+	opened := false
+	defer func() {
+		if !opened { // a subagent's chat is opened again later in this run
+			lock.Close()
+		}
+	}()
 	c := &Chat{
 		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
@@ -206,6 +213,7 @@ func openChatAs(dir string, role chatRole) (*Chat, error) {
 	c.enqueueMissing()
 	c.resetCview()
 	c.saveView()
+	opened = true
 	return c, nil
 }
 
@@ -292,8 +300,24 @@ func (c *Chat) appendDay(sub string, vs ...any) {
 // stops writing, so its files stay a first part of what it held, and
 // agentMems.fed opens it again from them. c.mu held, or c not yet shared.
 func (c *Chat) failWrite(err error) {
-	c.role.writeFailed(err)
+	if c.role.sub == "" {
+		fatal("%v", err)
+	}
+	c.warn(true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, c.role.sub))
 	c.broken = err
+}
+
+// warn says a compaction's or a write's failure on the page: a subagent's
+// chat's on the main chat's, named.
+func (c *Chat) warn(sound bool, s string) {
+	h := c.hub
+	if c.role.sub != "" {
+		h, s = c.role.notices, fmt.Sprintf("[%s] memory: %s", c.role.sub, s)
+	}
+	h.notice("warn", "%s", s)
+	if sound {
+		h.sound(soundError)
+	}
 }
 
 // Log appends one message, splitting text too long for one. Its images
@@ -774,6 +798,10 @@ func (c *Chat) waiting() bool {
 	return slices.ContainsFunc(c.ready0, func(i int) bool { return free(key{0, i}) }) || slices.ContainsFunc(c.readyM, free)
 }
 
+// idle is whether no line is being built or waiting to be: closed now,
+// the chat loses no work.
+func (c *Chat) idle() bool { return len(c.busy) == 0 && len(c.ready0) == 0 && len(c.readyM) == 0 }
+
 // compactor builds one line with a model from its context (the first stable
 // lines of it the same for compactions running at once) and its task.
 type compactor func(ctx context.Context, context []string, stable int, task []block) (string, error)
@@ -794,14 +822,14 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 		if f == nil {
 			f = &failure{}
 			c.failing[k] = f
-			c.role.warn(c.hub, false, fmt.Sprintf("compaction %s failed, trying again later: %v", k.name(), err))
+			c.warn(false, fmt.Sprintf("compaction %s failed, trying again later: %v", k.name(), err))
 		}
 		if f.n > 0 && c.written > f.at {
 			f.strikes++
 		}
 		f.n, f.at = f.n+1, c.written
 		if f.strikes < giveUp {
-			wait := min(retryIn<<min(f.n-1, 10), waitMax)
+			wait := min(cmp.Or(c.retryFor, retryIn)<<min(f.n-1, 10), waitMax)
 			f.until = time.Now().Add(wait)
 			time.AfterFunc(wait, func() {
 				c.mu.Lock()
@@ -814,7 +842,7 @@ func (c *Chat) build(k key, compact compactor, ctxLines []string, stable int, ta
 			return
 		}
 		// It fails while other lines get built: its source, cut, stands in.
-		c.role.warn(c.hub, true, fmt.Sprintf("compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err))
+		c.warn(true, fmt.Sprintf("compaction %s failed %d times while other lines were built: its line is its source, cut and marked: %v", k.name(), f.n, err))
 		text = c.fallback(k)
 	} else {
 		c.written++
@@ -1024,9 +1052,9 @@ func (c *Chat) notify() {
 
 const settleMax = 32 // a call waits for the chat's lines when at most this many are to build: four rounds of 8 compactions...
 
-var settleWait = time.Minute // ...and for at most this long
+const settleWait = time.Minute // ...and for at most this long (a Chat's settleFor, when set: tests)
 
-var retryIn = 10 * time.Second // a failed compaction's first wait, doubled at each failure
+const retryIn = 10 * time.Second // a failed compaction's first wait, doubled at each failure (a Chat's retryFor, when set)
 
 // settle waits until the chat's messages are summarized, so that no call
 // sees a placeholder, as the recipe says, when that is a short wait. An
@@ -1038,9 +1066,9 @@ var retryIn = 10 * time.Second // a failed compaction's first wait, doubled at e
 // how many lines a model has written since it began, at each change.
 func (c *Chat) settle(ctx context.Context, waiting func(n, written int)) error {
 	c.mu.Lock()
-	from := c.written
+	from, wait := c.written, cmp.Or(c.settleFor, settleWait)
 	c.mu.Unlock()
-	timeout := time.NewTimer(settleWait)
+	timeout := time.NewTimer(wait)
 	defer timeout.Stop()
 	own := func(k key) bool { return c.side(k) == 0 && !c.redo[k] }
 	for {

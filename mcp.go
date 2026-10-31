@@ -115,18 +115,30 @@ const (
 )
 
 // mcpList is the tools the chat serves: wake only with -wake. spawn's
-// autocompact goes up to the cap. zoom says what it gives of a subagent.
+// autocompact goes up to the cap; spawn and tell take mcp when the user
+// has servers for subagents only, which it names. zoom says what it gives
+// of a subagent.
 func (a *Agent) mcpList() []map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	tools := slices.Clip(mcpTools)
-	if a.agentCap > 0 {
-		tools = slices.Clone(mcpTools)
-		for i, t := range tools {
-			if t["name"] == "spawn" {
-				tools[i] = withWindowMax(t, a.agentCap)
-			}
+	tools := slices.Clone(mcpTools)
+	for i, t := range tools {
+		if t["name"] == "spawn" && a.agentCap > 0 {
+			t = withWindowMax(t, a.agentCap)
 		}
+		if (t["name"] == "spawn" || t["name"] == "tell") && len(a.mcpAgents) > 0 {
+			what := "MCP servers to give it, from those the user keeps for subagents only: "
+			if t["name"] == "tell" {
+				what = "MCP servers to give it now, before your message, from those the user keeps for subagents only: "
+			}
+			t = withProp(t, "mcp", map[string]any{"type": "array", "items": str,
+				"description": what + strings.Join(a.mcpAgents, ", ") + ". It has the servers on for all anyway. Leave it out unless its task needs one."})
+		}
+		if t["name"] == "zoom" && a.mems == nil {
+			t = maps.Clone(t)
+			t["description"] = zoomDesc + zoomAgentWholeTool
+		}
+		tools[i] = t
 	}
 	if a.mems == nil {
 		tools = slices.Clone(tools)
@@ -148,9 +160,14 @@ func (a *Agent) mcpList() []map[string]any {
 
 // withWindowMax is the spawn tool t with autocompact's maximum at most.
 func withWindowMax(t map[string]any, most int) map[string]any {
+	return withProp(t, "autocompact", map[string]any{"type": "integer", "minimum": windowMin, "maximum": most})
+}
+
+// withProp is the tool t with its input's property name set to schema.
+func withProp(t map[string]any, name string, schema map[string]any) map[string]any {
 	in := maps.Clone(t["inputSchema"].(map[string]any))
 	props := maps.Clone(in["properties"].(map[string]any))
-	props["autocompact"] = map[string]any{"type": "integer", "minimum": windowMin, "maximum": most}
+	props[name] = schema
 	in["properties"] = props
 	t = maps.Clone(t)
 	t["inputSchema"] = in
@@ -203,6 +220,7 @@ type toolArgs struct {
 	Model   string         `json:"model"`
 	Window  int            `json:"autocompact"`
 	Loop    *loopHook      `json:"loop"`
+	MCP     []string       `json:"mcp"`
 	Text    string         `json:"text"`
 	Before  int            `json:"before"`
 	At      string         `json:"at"`
@@ -259,9 +277,9 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":
-		return a.Spawn(x.Name, x.Task, x.Effort, x.Model, x.Window, x.Loop), nil
+		return a.Spawn(x.Name, x.Task, x.Effort, x.Model, x.Window, x.Loop, x.MCP...), nil
 	case tool == "tell":
-		return a.Tell(x.Name, x.Message), nil
+		return a.Tell(x.Name, x.Message, x.MCP...), nil
 	case tool == "wake":
 		return a.wakeTool(fromAgent, x), nil
 	case tool == "owe":

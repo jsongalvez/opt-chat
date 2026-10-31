@@ -1,22 +1,14 @@
 #!/usr/bin/env bash
 # Model-checks AgentMem.tla against every property in PROPS, under each
-# config given (default MCFixed.cfg, MCCrashFixed.cfg, then MCRestartFixed.cfg). TLC stops at the first broken
-# property; this prints its counterexample, drops it, and checks the rest
-# again. Exit status 1 if any property breaks. TRACE=1 prints whole states.
+# config given (default MC.cfg, MCCrash.cfg, then MCRestart.cfg). TLC
+# stops at the first broken property; this prints its counterexample,
+# drops it, and checks the rest again. Exit status 1 if any property breaks. TRACE=1 prints whole states.
 set -euo pipefail
 cd "$(dirname "$0")"
-VER=1.7.4
-SUM=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
-JAR=${TLA_JAR:-${XDG_CACHE_HOME:-$HOME/.cache}/tla/tla2tools-$VER.jar}
-if [ ! -f "$JAR" ]; then
-  mkdir -p "$(dirname "$JAR")"
-  curl -fsSL -o "$JAR.tmp" "https://github.com/tlaplus/tlaplus/releases/download/v$VER/tla2tools.jar"
-  echo "$SUM  $JAR.tmp" | sha256sum -c --quiet
-  mv "$JAR.tmp" "$JAR"
-fi
+JAR=$(../tlc.sh)
 PROPS=(NoWaitOnOthersIO NoDeadlock ChatIsLog NoLostStep FailureSurfaces Converges FailureStaysLocal)
 CONFIGS=("$@")
-[ ${#CONFIGS[@]} -eq 0 ] && CONFIGS=(MCFixed.cfg MCCrashFixed.cfg MCRestartFixed.cfg)
+[ ${#CONFIGS[@]} -eq 0 ] && CONFIGS=(MC.cfg MCCrash.cfg MCRestart.cfg)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fail=0

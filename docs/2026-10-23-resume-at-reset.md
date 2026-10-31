@@ -2,9 +2,8 @@
 
 When the plan's usage limit stops a call, Claude Code ends it with a result
 whose text says when the limit resets, as `You've hit your session limit ·
-resets 4am (Asia/Manila)`. Until now opt-chat posted "No reply" and waited
-for the user; a subagent's report said "failed". On Oct 23 that cost about
-three and a half hours.
+resets 4am (America/New_York)`. Until now opt-chat posted "No reply" and waited
+for the user; a subagent's report said "failed".
 
 Now, with `-resume-at-reset` (on), `limitresume.go`:
 

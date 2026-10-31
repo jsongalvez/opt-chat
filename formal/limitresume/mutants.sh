@@ -9,16 +9,18 @@ miss=0
 mutant() { # property, then a Python find and replace on the spec
   local prop=$1 find=$2 repl=$3 d
   d=$(mktemp -d)
-  cp LimitResume.tla MC.cfg check.sh "$d/"
-  python3 - "$d/LimitResume.tla" "$find" "$repl" <<'PY'
+  mkdir "$d/limitresume"
+  cp ../tlc.sh "$d/"
+  cp LimitResume.tla MC.cfg check.sh "$d/limitresume/"
+  python3 - "$d/limitresume/LimitResume.tla" "$find" "$repl" <<'PY'
 import sys
 p, a, b = sys.argv[1:]
 s = open(p).read()
 assert a in s, "mutant text not found: " + a
 open(p, "w").write(s.replace(a, b, 1))
 PY
-  sed -i "s/^PROPS=.*/PROPS=($prop)/" "$d/check.sh"
-  if "$d/check.sh" MC.cfg > "$d/out" 2>&1; then
+  sed -i "s/^PROPS=.*/PROPS=($prop)/" "$d/limitresume/check.sh"
+  if "$d/limitresume/check.sh" MC.cfg > "$d/out" 2>&1; then
     echo "MISSED $prop"; miss=1
   elif grep -q "FAIL $prop" "$d/out"; then
     echo "caught $prop"

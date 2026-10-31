@@ -2,9 +2,9 @@ name: formal
 on:
   push:
     branches: [master]
-    paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/agentmem/**', .github/workflows/formal.yml]
+    paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/**', .github/workflows/formal.yml]
   pull_request:
-    paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/agentmem/**', .github/workflows/formal.yml]
+    paths: [agentmem.go, agents.go, chat.go, subs.go, 'formal/**', .github/workflows/formal.yml]
 permissions:
   contents: read
 jobs:

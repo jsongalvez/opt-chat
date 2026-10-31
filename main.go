@@ -30,7 +30,7 @@ var prompt string
 func main() {
 	home, _ := os.UserHomeDir()
 	dir := flag.String("dir", filepath.Join(home, ".opt-chat"), "where the chat lives; its AGENTS.md holds your instructions")
-	cwd := flag.String("cwd", home, "where Opt's tools run")
+	cwd := flag.String("cwd", "", "where Opt's tools run (unset: opt-chat in the system's temp folder)")
 	model := flag.String("model", "fable", "model for turns (unset: the one the page's picker saved, if any)")
 	effort := flag.String("effort", "high", "effort for turns: low, medium, high, xhigh, max (unset: the picker's, if saved)")
 	amodel := flag.String("agent-model", "opus", "model for subagents")
@@ -75,6 +75,22 @@ func main() {
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
 	given := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { given[f.Name] = true })
+	// Where Opt worked before its tools got a folder of their own: @
+	// completes paths from there, and Opt's own MCP servers start as a copy
+	// of that folder's.
+	was := home
+	if *cwd == "" {
+		*cwd = filepath.Join(os.TempDir(), "opt-chat")
+	} else {
+		was = *cwd
+	}
+	var optMCP, claudeJSON string
+	if *ownConfig {
+		optMCP, claudeJSON = filepath.Join(*dir, "mcp.json"), ccConfigPath()
+		if err := seedOptMCP(*dir, claudeJSON, was); err != nil { // before settings are read: it adds to them
+			warn("Opt's own MCP servers, %s: %v", optMCP, err)
+		}
+	}
 	// What the model picker saved, unless a flag says otherwise.
 	saved := loadSettings(*dir)
 	if !given["model"] && modelName.MatchString(saved.Model) {
@@ -137,8 +153,8 @@ func main() {
 		hb.print = webPrinter()
 	}
 	h := &harness{}
-	a := &Agent{chat: c, system: systemPrompt(agentsMD, *wake, *owed, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, ccopied: *ccopied, perm: *perm, cwd: *cwd, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
+	a := &Agent{chat: c, system: systemPrompt(agentsMD, optMCP, *wake, *owed, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, ccopied: *ccopied, perm: *perm, cwd: *cwd, files: was, optMCP: optMCP, claudeJSON: claudeJSON, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, mcpAgents: saved.MCPAgents, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	if *agentMem {
@@ -344,12 +360,16 @@ const (
 )
 
 // systemPrompt is the prompt for a chat whose instructions are in
-// agentsMD, with the wake and owe tools listed when on, and zoom on
-// subagents as -agent-memory says.
-func systemPrompt(agentsMD string, wake, owed, agentMem bool) string {
+// agentsMD, with Opt's MCP servers' file when it has one, the wake and
+// owe tools listed when on, and zoom on subagents as -agent-memory says.
+func systemPrompt(agentsMD, optMCP string, wake, owed, agentMem bool) string {
 	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
 	if !agentMem {
 		s = strings.Replace(s, zoomAgentLines, zoomAgentWhole, 1)
+	}
+	if optMCP != "" {
+		const after = "Change or drop a line only when the user asks.\n"
+		s = strings.Replace(s, after, after+"\n"+strings.ReplaceAll(mcpPrompt, "{{mcp.json}}", optMCP), 1)
 	}
 	if wake {
 		s = strings.Replace(s, "\n\n# Turns\n", "\n"+wakePrompt+"\n# Turns\n", 1)
@@ -1032,6 +1052,6 @@ func warn(f string, a ...any) { fmt.Fprintf(os.Stderr, "\x1b[33m"+f+"\x1b[0m\n",
 
 func fatal(f string, a ...any) {
 	warn(f, a...)
-	stopChildren()
+	stopChildren(nil)
 	os.Exit(1)
 }

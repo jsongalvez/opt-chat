@@ -59,7 +59,7 @@ formal/limitresume/check.sh      # about 2.5 min (MC.cfg) + 4 min (MC2.cfg) on 2
 formal/limitresume/mutants.sh    # about 2 min; every property must say "caught"
 ```
 
-It needs Java 11 or later and curl; the first run fetches TLA+ tools 1.8.0
+It needs Java 11 or later and curl; the first run of `formal/tlc.sh` fetches TLA+ tools 1.7.4
 to `~/.cache/tla` and checks its sha256. A pass prints
 `PASS <properties>: N distinct states found`. A failure prints
 `FAIL <property>:` and the steps of the shortest counterexample;

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,6 +49,7 @@ func zoomTool(a *Agent, id any, n int) string {
 // zoom("Name") on a subagent that ran long gives a bounded view of its
 // chat, not its whole log, which overflowed the caller's context.
 func TestAgentZoomBounded(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	bigAgentLog(t, c, "Big", 300, 5000) // 1.5 MB
@@ -62,6 +64,7 @@ func TestAgentZoomBounded(t *testing.T) {
 // subagent's new steps go in as it writes them, and a chat opened again
 // after steps it missed takes each once.
 func TestAgentMemTree(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 300)
 	a := memAgent(c)
 	bigAgentLog(t, c, "Big", 300, 5000)
@@ -142,6 +145,7 @@ func TestAgentMemTree(t *testing.T) {
 // With -agent-memory=false, zoom("Name") gives the whole log as before,
 // steps go to the log only, and the prompt and the zoom tool say so.
 func TestAgentMemOff(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
 	bigAgentLog(t, c, "Big", 3, 10)
@@ -167,7 +171,7 @@ func TestAgentMemOff(t *testing.T) {
 				zoom = tl["description"].(string)
 			}
 		}
-		prompt := systemPrompt("", false, false, mem)
+		prompt := systemPrompt("", "", false, false, mem)
 		if lines := strings.Contains(zoom, `zoom("Name:id", n)`); lines != mem || strings.Contains(prompt, `zoom("Name:id", n)`) != mem {
 			t.Errorf("memory %v: the zoom tool says %q; the prompt offers lines: %v", mem, zoom, !lines)
 		}
@@ -177,6 +181,7 @@ func TestAgentMemOff(t *testing.T) {
 // A zoom while a subagent writes a step with blank lines in it must not cut
 // the step at one of them: every step goes in whole.
 func TestAgentMemTornWrite(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("writes 20 MB with an fsync per step")
 	}
@@ -224,6 +229,7 @@ func TestAgentMemTornWrite(t *testing.T) {
 // The first zoom of a subagent from before, nothing summarized yet, shows
 // what it was asked and what it ended with, not bare placeholders.
 func TestAgentZoomFirstViewHeads(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	bigAgentLog(t, c, "Big", 300, 5000)
@@ -241,6 +247,7 @@ func TestAgentZoomFirstViewHeads(t *testing.T) {
 // Subagents' compactions share one pool of -agent-jobs, and none starts
 // while the main chat has a line waiting to be built.
 func TestAgentMemSharesQueue(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	mainFake := c.compact
@@ -293,6 +300,7 @@ func TestAgentMemSharesQueue(t *testing.T) {
 // read, holding whatever it holds, until the test writes the log and closes
 // it.
 func TestAgentMemNoGlobalStall(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
@@ -333,6 +341,7 @@ func TestAgentMemNoGlobalStall(t *testing.T) {
 // A subagent chat's failed compaction says so on the page, naming the
 // subagent.
 func TestAgentMemFailureNoticed(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.hub = newHub()
 	var mu sync.Mutex
@@ -362,6 +371,7 @@ func TestAgentMemFailureNoticed(t *testing.T) {
 // Subagents' chats don't stay open for the life of the process: past
 // agentOpenMax, idle ones close, and one closed opens again whole.
 func TestAgentMemCloses(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	a.mems.setCompact(c.compact)
@@ -393,6 +403,7 @@ func TestAgentMemCloses(t *testing.T) {
 
 // A main chat line that keeps failing holds up no subagent's memory.
 func TestAgentMemMainFailing(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	mainFake := c.compact
@@ -445,6 +456,7 @@ func stalls(t *testing.T, held *Chat, what string, step func()) {
 // The pump that follows any subagent's compaction never holds every
 // subagent up behind one chat writing to disk.
 func TestAgentMemPumpNoStall(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
@@ -466,6 +478,7 @@ func TestAgentMemPumpNoStall(t *testing.T) {
 // Closing idle chats past agentOpenMax skips one that is writing, as it
 // skips one being fed, and holds no other subagent up.
 func TestAgentMemCloseNoStall(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
@@ -488,6 +501,7 @@ func TestAgentMemCloseNoStall(t *testing.T) {
 // A step written after a crash cut the log's last one short is a step of
 // its own, not the cut one's text (AgentMem.tla, NoLostStep).
 func TestAgentMemTornTail(t *testing.T) {
+	t.Parallel()
 	for _, cut := range []string{"tool@1761134400001#toolu_1: Bash {\"comm", "too"} {
 		c, _ := fakeChat(t, t.TempDir(), 100)
 		os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
@@ -510,6 +524,7 @@ func TestAgentMemTornTail(t *testing.T) {
 // A subagent's memory that can't open says so on the page and in zoom,
 // never that the subagent doesn't exist (AgentMem.tla, FailureSurfaces).
 func TestAgentMemOpenFails(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.hub = newHub()
 	var mu sync.Mutex
@@ -576,6 +591,7 @@ func memTexts(t *testing.T, a *Agent, name string) []string {
 // of its own, so the chat fed from the log once memory is on again has it
 // (AgentMem.tla, NoLostStep, "offseal").
 func TestAgentMemOffSeals(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
 	os.WriteFile(filepath.Join(c.dir, "agents", "O.log"), []byte("task: work\n\ntool@1761134400001#toolu_1: Bash {\"comm"), 0o600)
@@ -592,6 +608,7 @@ func TestAgentMemOffSeals(t *testing.T) {
 // them on disk; the chat opened again ends the step, not skips the rest
 // (AgentMem.tla, Converges, "parts").
 func TestAgentMemTornParts(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
@@ -610,13 +627,37 @@ func TestAgentMemTornParts(t *testing.T) {
 	}
 }
 
-// A write to a subagent's chat that fails stops neither opt-chat nor the
-// subagent: the page is told, zoom gives the whole log, and once the disk
-// takes writes again the chat has every step, once (AgentMem.tla,
-// FailureStaysLocal, Converges, "nofatal"). fatal exits, so the test runs
-// in a child process.
+// A failed write to a subagent's chat, from a read-only file or a full
+// disk, stops that chat's writes, not opt-chat:
+// zoom gives the whole log meanwhile, and the chat catches up once the disk
+// takes writes again. Run in a child process, as a fatal would end the test
+// binary.
 func TestAgentMemWriteFails(t *testing.T) {
-	if dir := os.Getenv("AGENTMEM_CHILD"); dir != "" {
+	t.Parallel()
+	breaks := map[string]func(day string) (mend func()){
+		"read-only": func(day string) func() {
+			os.Chmod(day, 0o400)
+			return func() { os.Chmod(day, 0o600) }
+		},
+		"disk full": func(day string) func() {
+			// A file size limit fails a write as a full disk does: what fits
+			// is written, then an error (EFBIG here, ENOSPC there).
+			fi, err := os.Stat(day)
+			if err != nil {
+				panic(err)
+			}
+			signal.Ignore(syscall.SIGXFSZ)
+			var was syscall.Rlimit
+			syscall.Getrlimit(syscall.RLIMIT_FSIZE, &was)
+			lim := was
+			lim.Cur = uint64(fi.Size()) + 7
+			if err := syscall.Setrlimit(syscall.RLIMIT_FSIZE, &lim); err != nil {
+				panic(err)
+			}
+			return func() { syscall.Setrlimit(syscall.RLIMIT_FSIZE, &was) }
+		},
+	}
+	if dir, how := os.Getenv("AGENTMEM_CHILD"), os.Getenv("AGENTMEM_BREAK"); dir != "" {
 		c, _ := fakeChat(t, dir, 100)
 		c.hub = newHub()
 		var mu sync.Mutex
@@ -631,38 +672,46 @@ func TestAgentMemWriteFails(t *testing.T) {
 		a := memAgent(c)
 		os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
 		a.agentWrite("W", "task", "work")
-		os.Chmod(memDay(c, "W"), 0o400) // as a full disk: the write fails
+		mend := breaks[how](memDay(c, "W"))
 		a.agentWrite("W", "agent", "one")
-		if z := zoomTool(a, "W", 0); !strings.Contains(z, "agent: one") {
-			t.Errorf("zoom(\"W\") with its memory failing: %q", z)
+		// The step's write cut the chat's day file short; opening it again
+		// fails too while the disk is full, and zoom says why.
+		if z := zoomTool(a, "W", 0); !strings.Contains(z, "agent: one") && !strings.Contains(z, "memory failed") {
+			t.Errorf("%s: zoom(\"W\") with its memory failing: %q", how, z)
 		}
-		os.Chmod(memDay(c, "W"), 0o600)
+		mend()
 		a.agentWrite("W", "agent", "two")
 		if got := strings.Join(memTexts(t, a, "W"), ","); got != "work,one,two" {
-			t.Errorf("the chat once the disk takes writes: %q", got)
+			t.Errorf("%s: the chat once the disk takes writes: %q", how, got)
 		}
 		mu.Lock()
 		if !strings.Contains(strings.Join(notes, "\n"), "[W] memory") {
-			t.Errorf("no notice of W's memory failing: %q", notes)
+			t.Errorf("%s: no notice of W's memory failing: %q", how, notes)
 		}
 		mu.Unlock()
 		fmt.Println("AGENTMEM_ALIVE")
 		return
 	}
-	if os.Geteuid() == 0 {
-		t.Skip("root writes to a read-only file")
-	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestAgentMemWriteFails$", "-test.v")
-	cmd.Env = append(os.Environ(), "AGENTMEM_CHILD="+t.TempDir())
-	out, err := cmd.CombinedOutput()
-	if err != nil || !strings.Contains(string(out), "AGENTMEM_ALIVE") {
-		t.Errorf("the child: %v\n%s", err, out)
+	for how := range breaks {
+		if how == "read-only" && os.Geteuid() == 0 {
+			continue // root writes to a read-only file
+		}
+		t.Run(how, func(t *testing.T) {
+			t.Parallel()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestAgentMemWriteFails$", "-test.v")
+			cmd.Env = append(os.Environ(), "AGENTMEM_CHILD="+t.TempDir(), "AGENTMEM_BREAK="+how)
+			out, err := cmd.CombinedOutput()
+			if err != nil || !strings.Contains(string(out), "AGENTMEM_ALIVE") {
+				t.Errorf("the child: %v\n%s", err, out)
+			}
+		})
 	}
 }
 
 // A name whose log is gone but whose chat stays is not given again: a new
 // subagent under it would have its steps taken for the old chat's.
 func TestAgentMemNameReuse(t *testing.T) {
+	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := memAgent(c)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)

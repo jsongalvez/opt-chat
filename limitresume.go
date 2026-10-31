@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ func usageLimit(text string) bool { return limitText.MatchString(text) }
 const justPassed = 15 * time.Minute
 
 // limitReset reads when the limit resets from Claude Code's message, as
-// "You've hit your session limit · resets 4am (Asia/Manila)",
+// "You've hit your session limit · resets 4am (America/New_York)",
 // "resets Mon 12:00am", "resets Oct 24, 10am (UTC)", "resets 16:00", "resets in 2 hours" or the
 // older "usage limit reached|1760000000".
 func limitReset(text string, now time.Time) (time.Time, bool) {
@@ -339,17 +340,10 @@ func (a *Agent) nextResetLocked(now time.Time) time.Time {
 			five = w.Resets
 		}
 	}
-	if t := cmpFirst(full, five); t > 0 {
+	if t := cmp.Or(full, five); t > 0 {
 		at = time.Unix(t, 0)
 	}
 	return at
-}
-
-func cmpFirst(a, b int64) int64 {
-	if a > 0 {
-		return a
-	}
-	return b
 }
 
 // limitWent tells the resumer that who ("" for Opt's turn) finished

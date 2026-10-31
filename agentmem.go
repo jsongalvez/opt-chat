@@ -57,7 +57,7 @@ func newAgentMems(main *Chat, jobs int) *agentMems {
 	m := &agentMems{main: main, gate: jobGate{max: jobs}}
 	m.gate.kick = m.pump
 	main.mu.Lock()
-	main.role = mainRole{&m.gate}
+	main.role = chatRole{gate: &m.gate}
 	main.mu.Unlock()
 	return m
 }
@@ -77,68 +77,43 @@ type agentMem struct {
 	sealed bool
 }
 
-// chatRole is what sets a chat's compactions apart by whose chat it is:
-// the main chat's (mainRole) go first; a subagent's (*subChat) share
-// -agent-jobs and name it in their warnings. Called holding the chat's mu.
-type chatRole interface {
-	take() bool        // whether a compaction may start
-	done()             // one taken has ended
-	pumped(waits bool) // after a pump: whether lines wait to be built
-	warn(main *hub, sound bool, s string)
-	writeFailed(err error) // a write to the chat's files failed
-	whose() string         // what a compaction is told of whose chat it is
-	mergedHeads() bool     // a merged line not built shows its messages' heads
+// chatRole sets a chat's compactions apart by whose chat it is: the main
+// chat's (sub "") go first; a subagent's share gate's -agent-jobs, and its
+// warnings go to the main chat's page (notices), named. Read holding the
+// chat's mu.
+type chatRole struct {
+	sub     string   // the subagent's name; "": the main chat
+	gate    *jobGate // nil: the main chat with -agent-memory=false
+	notices *hub     // a subagent's chat's: the main chat's hub (its messages are not the page's)
 }
 
-// mainRole is the main chat's: gate, if subagents have memory, waits for
-// its lines.
-type mainRole struct{ gate *jobGate }
+// take is whether a compaction may start; done, that one taken has ended.
+func (r chatRole) take() bool { return r.sub == "" || r.gate.take() }
+func (r chatRole) done() {
+	if r.sub != "" {
+		r.gate.give()
+	}
+}
 
-func (mainRole) take() bool { return true }
-func (mainRole) done()      {}
-func (r mainRole) pumped(waits bool) {
-	if r.gate != nil {
+// pumped tells the gate, after the main chat's pump, whether its lines wait.
+func (r chatRole) pumped(waits bool) {
+	if r.sub == "" && r.gate != nil {
 		r.gate.setMain(waits)
 	}
 }
-func (mainRole) warn(main *hub, sound bool, s string) {
-	main.notice("warn", "%s", s)
-	if sound {
-		main.sound(soundError)
-	}
-}
-func (mainRole) writeFailed(err error) {
-	fatal("%v", err) // ponytail: the log is history and must not have holes
-}
-func (mainRole) whose() string     { return "" }
-func (mainRole) mergedHeads() bool { return false }
 
-// subChat is a subagent's chat's: its name, the main chat's hub for its
-// warnings (its messages are not the page's), and the gate its
-// compactions share.
-type subChat struct {
-	name string
-	hub  *hub
-	gate *jobGate
-}
+// mergedHeads is whether a merged line not built shows its messages'
+// heads: a subagent's first zoom often finds none built.
+func (r chatRole) mergedHeads() bool { return r.sub != "" }
 
-func (s *subChat) take() bool        { return s.gate.take() }
-func (s *subChat) done()             { s.gate.give() }
-func (s *subChat) pumped(bool)       {}
-func (s *subChat) mergedHeads() bool { return true } // its first zoom often finds none built
-func (s *subChat) warn(_ *hub, sound bool, msg string) {
-	s.hub.notice("warn", "[%s] memory: %s", s.name, msg)
-	if sound {
-		s.hub.sound(soundError)
+// whose is what a compaction is told of whose chat it is.
+func (r chatRole) whose() string {
+	if r.sub == "" {
+		return ""
 	}
-}
-func (s *subChat) writeFailed(err error) {
-	s.warn(nil, true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, s.name))
-}
-func (s *subChat) whose() string {
 	return fmt.Sprintf("This is subagent [%s]'s own chat, not the main one. Its kinds: task, its task; "+
 		"on, its model; agent, its replies; tool and echo, its own tool calls and their results; "+
-		"opt and user, messages Opt or the user sent it; cut, compacted and loop, opt-chat's notes.\n", s.name)
+		"opt and user, messages Opt or the user sent it; cut, compacted and loop, opt-chat's notes.\n", r.sub)
 }
 
 // jobGate shares -agent-jobs compactions among all subagents' chats, and
@@ -291,7 +266,7 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	sc, err := openChatAs(filepath.Join(dir, name+".mem"), &subChat{name: name, hub: m.main.hub, gate: &m.gate})
+	sc, err := openChatAs(filepath.Join(dir, name+".mem"), chatRole{sub: name, gate: &m.gate, notices: m.main.hub})
 	if err != nil {
 		return nil, err
 	}
@@ -424,7 +399,7 @@ func (m *agentMems) closeIdle(keep string) {
 			if !sc.mu.TryLock() { // writing a line to disk: in use, and agentMems.mu is held
 				idle = false
 			} else {
-				if idle = len(sc.busy) == 0 && len(sc.ready0) == 0 && len(sc.readyM) == 0; idle {
+				if idle = sc.idle(); idle {
 					sc.compact = nil
 					sc.lock.Close()
 				}

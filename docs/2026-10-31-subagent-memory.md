@@ -87,281 +87,64 @@ about 25 minutes at 2 at once. A 1.4 MB log takes about 1,600. A running
 subagent's chat costs this as it works, whether or not it is ever
 zoomed: about 1.2 compactions per step.
 
+Measured: a real 72 KB log took 2.5 minutes and $0.036 of Haiku
+compactions, for an 8.8 KB view. A real 1.37 MB log's first view,
+with a stand-in summarizer, was 18 KB.
+
+## Crashes, a full disk and the off switch
+
+A subagent's memory is a view built from its log, which only grows. So a
+crash, a failed write and the off switch come down to one rule: whatever
+was cut short where, and whichever way restarts turned `-agent-memory`,
+a chat fed to the log's end is the whole log, as if nothing had
+happened. In the code:
+
+- A log cut short gets a blank line before the next step, memory on or
+  off, so the next step's head never reads as text of the cut one
+  (TestAgentMemTornTail, TestAgentMemOffSeals).
+- A step longer than `clipMax` goes into the chat in parts. A chat opened
+  again after a crash between them writes the missing parts
+  (TestAgentMemTornParts).
+- A failed write to a subagent's chat (a full disk) stops that chat, not
+  opt-chat: it writes nothing more, says so on the page, and zoom gives
+  the whole log or says why it can't. The next feed opens it again from
+  its files and catches up. An open that fails closes the chat's lock
+  file, so the open once the disk has room works. The main chat's failed
+  writes stay fatal (TestAgentMemWriteFails, with a read-only file and
+  with a file size limit standing in for a full disk: a short write,
+  then an error).
+- Spawn skips a name that has a `.log` or a `.mem`, so a new subagent
+  never takes an old chat for its own (TestAgentMemNameReuse).
+
 ## Model-checked
 
 `formal/agentmem/AgentMem.tla` models the log writer, its feed, Opt's
-zoom, the pump, compactions saving their lines, closing idle chats and a
-crash, each action one step of the code between two lock operations.
-TLC checks five rules over every order of those steps (two subagents,
-two steps each; or one subagent, three steps, a crash or failed write and
-a failure): no step lost or doubled, a step or zoom never waits on
-another subagent's disk, no deadlock, every failure said on the page.
-`formal/agentmem/check.sh` runs it; the `agent-memory` skill says when.
+zoom, the pump, compactions saving their lines, closing idle chats, a
+write cut short, a failed write to a chat, and a crash or restart that
+may turn `-agent-memory` either way, each action one step of the code
+between two lock operations. TLC checks seven rules over every order of
+those steps, in three scopes (two subagents at once; one subagent with a
+crash and a failure; one with two crashes and the off switch): no step
+lost, doubled or out of order; a step or zoom never waits on another
+subagent's disk; no deadlock; a chat fed to the log's end is the whole
+log after any crash; a memory failure shows on the page and never stops
+opt-chat. `formal/agentmem/check.sh` runs it (about 6 minutes on 2
+cores), and the `agent-memory` skill says when.
 
-At 93cb97b..b5cc5bb TLC found four bugs, each reproduced by a Go test
-that failed before its fix: the pump and closing idle chats each held the
-map's lock while waiting on one chat's disk writes, holding up every
-other subagent's steps and zooms (TestAgentMemPumpNoStall,
-TestAgentMemCloseNoStall); a write cut short swallowed the next step
-(TestAgentMemTornTail); a chat that couldn't open was told only to the
-terminal, and zoom said the subagent didn't exist (TestAgentMemOpenFails).
-The off switch is the old whole-log zoom, checked by TestAgentMemOff.
-
-The charts, drawn by /statechart from the model: grey works, red is a
-bug the fix leaves, green a bug the fix fixes. Each bug's path is in
-[2026-10-31-subagent-memory-charts/](2026-10-31-subagent-memory-charts/),
-with its story in words.
-
-Locks: two subagents, Opt zooming one.
-
-```mermaid
----
-title: "Subagent memory: locks"
-config:
-  markdownAutoWrap: false
-  state:
-    useMaxWidth: false
----
-stateDiagram-v2
-  %% second model (fix): the fix
-  classDef works fill:#f4f6f7,stroke:#566573,color:#1b2631
-  classDef wrong fill:#fdedec,stroke:#c0392b,color:#7b241c
-  classDef fixed fill:#e9f7ef,stroke:#1e8449,color:#145a32
-  classDef mixed fill:#fdebd0,stroke:#d35400,color:#7e5109
-  classDef after fill:#ffffff,stroke:#808b96,color:#566573
-  classDef worse fill:#f4ecf7,stroke:#7d3c98,color:#4a235a
-  classDef worksPath fill:#f4f6f7,stroke:#1f3a93,stroke-width:4px,color:#1b2631
-  classDef wrongPath fill:#fdedec,stroke:#1f3a93,stroke-width:4px,color:#7b241c
-  classDef fixedPath fill:#e9f7ef,stroke:#1f3a93,stroke-width:4px,color:#145a32
-  classDef mixedPath fill:#fdebd0,stroke:#1f3a93,stroke-width:4px,color:#7e5109
-  classDef afterPath fill:#ffffff,stroke:#1f3a93,stroke-width:4px,color:#566573
-  classDef worsePath fill:#f4ecf7,stroke:#1f3a93,stroke-width:4px,color:#4a235a
-  state "Legend" as legend {
-    state "Works today" as legendWorks
-    state "Fixed or new with the fix" as legendFixed
-  }
-  class legendWorks works
-  class legendFixed fixed
-  state "A step waits on another<br/>subagent's disk" as s0
-  state "A: step on disk, memory<br/>behind" as s1
-  state "B: step on disk, memory<br/>behind" as s2
-  state "Every step in memory" as s3
-  state "Nothing written" as s4
-  state "Opt's zoom waits on<br/>another subagent's disk" as s5
-  [*] --> s4
-  s4 --> s1 : the step is written to its log
-  s1 --> s3 : feeds its memory
-  s3 --> s2 : the step is written to its log
-  s2 --> s3 : feeds its memory
-  s3 --> s0 : takes the chat's lock to save<br/>it or the pump goes to the<br/>next chat or closes idle<br/>memories or takes its chat's<br/>lock or a subagent starts a<br/>step
-  s0 --> s3 : the summary is saved to disk<br/>or its chat is written to disk
-  s2 --> s0 : feeds its memory
-  s3 --> s5 : the pump goes to the next chat<br/>or takes the chat's lock to<br/>save it or Opt zooms
-  s5 --> s3 : the summary is saved to disk
-  s3 --> s3 : its memory opens or a subagent<br/>starts a step or Opt zooms or<br/>finds its entry or takes its<br/>own lock or feeds its memory<br/>or takes its chat's lock or a<br/>compaction ends: the pump runs<br/>or the pump goes to the next<br/>chat or the pump takes a<br/>chat's lock or a summary comes<br/>back or takes the chat's lock<br/>to save it<br/>#160;<br/>with the fix, the pump goes to<br/>the next chat or closes idle<br/>memories
-  s4 --> s4 : a subagent starts a step or<br/>finds its entry or takes its<br/>own lock
-  class s0 fixed
-  class s1 works
-  class s2 works
-  class s3 works
-  class s4 works
-  class s5 fixed
-```
-
-Crashes and failures: one subagent.
-
-```mermaid
----
-title: "Subagent memory: crashes and failures"
-config:
-  markdownAutoWrap: false
-  state:
-    useMaxWidth: false
----
-stateDiagram-v2
-  %% second model (fix): the fix
-  classDef works fill:#f4f6f7,stroke:#566573,color:#1b2631
-  classDef wrong fill:#fdedec,stroke:#c0392b,color:#7b241c
-  classDef fixed fill:#e9f7ef,stroke:#1e8449,color:#145a32
-  classDef mixed fill:#fdebd0,stroke:#d35400,color:#7e5109
-  classDef after fill:#ffffff,stroke:#808b96,color:#566573
-  classDef worse fill:#f4ecf7,stroke:#7d3c98,color:#4a235a
-  classDef worksPath fill:#f4f6f7,stroke:#1f3a93,stroke-width:4px,color:#1b2631
-  classDef wrongPath fill:#fdedec,stroke:#1f3a93,stroke-width:4px,color:#7b241c
-  classDef fixedPath fill:#e9f7ef,stroke:#1f3a93,stroke-width:4px,color:#145a32
-  classDef mixedPath fill:#fdebd0,stroke:#1f3a93,stroke-width:4px,color:#7e5109
-  classDef afterPath fill:#ffffff,stroke:#1f3a93,stroke-width:4px,color:#566573
-  classDef worsePath fill:#f4ecf7,stroke:#1f3a93,stroke-width:4px,color:#4a235a
-  state "Legend" as legend {
-    state "Works today" as legendWorks
-    state "Fixed or new with the fix" as legendFixed
-  }
-  class legendWorks works
-  class legendFixed fixed
-  state "A's last write cut short" as s0
-  state "A's next step swallowed by<br/>a cut one" as s1
-  state "A: step on disk, memory<br/>behind" as s2
-  state "Every step in memory" as s3
-  state "Every step in memory, a<br/>failure said" as s4
-  state "Memory failed, nobody told" as s5
-  state "Nothing written" as s6
-  [*] --> s6
-  s6 --> s2 : the step is written to its log
-  s6 --> s0 : the write is cut short or<br/>opt-chat crashes
-  s2 --> s3 : its chat is written to disk or<br/>feeds its memory
-  s2 --> s5 : feeds its memory
-  s0 --> s5 : feeds its memory
-  s0 --> s1 : the step is written to its log
-  s3 --> s2 : the step is written to its log
-  s3 --> s5 : feeds its memory
-  s3 --> s0 : the write is cut short or<br/>opt-chat crashes
-  s3 --> s4 : the summary is saved to disk
-  s5 --> s1 : the step is written to its log
-  s4 --> s2 : the step is written to its log
-  s4 --> s0 : the write is cut short or<br/>opt-chat crashes
-  s2 --> s4 : its chat is written to disk or<br/>feeds its memory
-  s0 --> s2 : with the fix, the step is<br/>written to its log
-  s2 --> s0 : with the fix, the write is cut<br/>short or opt-chat crashes
-  s1 --> s1 : feeds its memory
-  class s0 works
-  class s1 fixed
-  class s2 works
-  class s3 works
-  class s4 works
-  class s5 fixed
-  class s6 works
-```
-
-## Restarts, the off switch and a full disk
-
-A subagent's memory is a view built from its log, which only grows. So
-crashes, failed writes and the off switch come down to one rule, checked
-as `Converges`: a crash or a failed write at any step, then a restart with
-memory on or off, ends with the same chat a run with no crash would have.
-No step is lost, doubled or glued to another, and zoom never shows a step
-cut short. A full disk or a failed fsync is a crash at that point. Turning
-memory off and on again is a reload from the log. At 364d549 the model
-found four more bugs. Each one was reproduced by a Go test that failed
-before its fix:
-
-- With `-agent-memory=false`, a step written after a cut-short write was
-  glued onto it, and once memory was on again that step was lost
-  (TestAgentMemOffSeals). Now the log is sealed with memory off too.
-- A crash or a full disk while a step longer than `clipMax` was written
-  to the chat left only its first parts. The chat opened again counted
-  the step as held, so the rest was lost for good (TestAgentMemTornParts).
-  Now the chat opened again writes the missing parts.
-- A failed write to a subagent's chat was fatal and stopped opt-chat
-  (TestAgentMemWriteFails). Now the chat writes nothing more and says so
-  on the page, and zoom gives the whole log. The next feed opens the chat
-  again from its files. The model found a race in this fix: a
-  compaction's write can fail between the feed's check and its write. So
-  `fed` checks again after the feed. The main chat's failed writes are
-  still fatal.
-- A name whose log was gone but whose `.mem` stayed was given to a new
-  subagent, and that subagent's steps were taken for the old ones
-  (TestAgentMemNameReuse). Now spawn skips a name that has either file.
-
-Restarts: one subagent, a crash or a failed write anywhere, a failed
-write to its chat, and each restart turning memory on or off.
-
-```mermaid
----
-title: "Subagent memory: restarts"
-config:
-  markdownAutoWrap: false
-  state:
-    useMaxWidth: false
----
-stateDiagram-v2
-  %% second model (fix): the fix
-  classDef works fill:#f4f6f7,stroke:#566573,color:#1b2631
-  classDef wrong fill:#fdedec,stroke:#c0392b,color:#7b241c
-  classDef fixed fill:#e9f7ef,stroke:#1e8449,color:#145a32
-  classDef mixed fill:#fdebd0,stroke:#d35400,color:#7e5109
-  classDef after fill:#ffffff,stroke:#808b96,color:#566573
-  classDef worse fill:#f4ecf7,stroke:#7d3c98,color:#4a235a
-  classDef worksPath fill:#f4f6f7,stroke:#1f3a93,stroke-width:4px,color:#1b2631
-  classDef wrongPath fill:#fdedec,stroke:#1f3a93,stroke-width:4px,color:#7b241c
-  classDef fixedPath fill:#e9f7ef,stroke:#1f3a93,stroke-width:4px,color:#145a32
-  classDef mixedPath fill:#fdebd0,stroke:#1f3a93,stroke-width:4px,color:#7e5109
-  classDef afterPath fill:#ffffff,stroke:#1f3a93,stroke-width:4px,color:#566573
-  classDef worsePath fill:#f4ecf7,stroke:#1f3a93,stroke-width:4px,color:#4a235a
-  state "Legend" as legend {
-    state "Works today" as legendWorks
-    state "Fixed or new with the fix" as legendFixed
-  }
-  class legendWorks works
-  class legendFixed fixed
-  state "A's last write cut short" as s0
-  state "A's memory cut mid-step" as s1
-  state "A's memory differs from<br/>its log" as s2
-  state "A's memory open, part of<br/>the log missing" as s3
-  state "A's next step swallowed by<br/>a cut one" as s4
-  state "A: step on disk, memory<br/>behind" as s5
-  state "Every step in memory" as s6
-  state "Every step in memory, a<br/>failure said" as s7
-  state "Memory off: steps go to<br/>the log alone" as s8
-  state "Nothing written" as s9
-  state "Opt read a step cut short" as s10
-  state "opt-chat stopped by a<br/>subagent's memory" as s11
-  [*] --> s8
-  [*] --> s9
-  s8 --> s9 : opt-chat crashes or restarts,<br/>memory on or off
-  s9 --> s8 : opt-chat crashes or restarts,<br/>memory on or off
-  s8 --> s0 : opt-chat crashes or restarts,<br/>memory on or off or the write<br/>is cut short
-  s8 --> s5 : opt-chat crashes or restarts,<br/>memory on or off
-  s0 --> s4 : the step is written to its log
-  s9 --> s5 : the step is written to its log
-  s9 --> s0 : opt-chat crashes or restarts,<br/>memory on or off or the write<br/>is cut short
-  s5 --> s6 : its chat is written to disk or<br/>feeds its memory
-  s5 --> s8 : opt-chat crashes or restarts,<br/>memory on or off
-  s0 --> s5 : the step is written to its log
-  s6 --> s8 : opt-chat crashes or restarts,<br/>memory on or off
-  s5 --> s9 : its log is deleted, a new<br/>subagent takes the name
-  s6 --> s2 : its log is deleted, a new<br/>subagent takes the name
-  s5 --> s7 : its chat is written to disk or<br/>feeds its memory
-  s6 --> s5 : the step is written to its log
-  s6 --> s7 : the summary is saved to disk<br/>or feeds its memory<br/>#160;<br/>with the fix, saving the<br/>summary fails (a full disk)
-  s5 --> s0 : opt-chat crashes or restarts,<br/>memory on or off or the write<br/>is cut short
-  s7 --> s8 : opt-chat crashes or restarts,<br/>memory on or off
-  s6 --> s0 : opt-chat crashes or restarts,<br/>memory on or off or the write<br/>is cut short
-  s6 --> s11 : saving the summary fails (a<br/>full disk)
-  s7 --> s2 : its log is deleted, a new<br/>subagent takes the name
-  s5 --> s11 : writing its chat fails (a full<br/>disk) or saving the summary<br/>fails (a full disk)
-  s5 --> s1 : opt-chat crashes or restarts,<br/>memory on or off
-  s7 --> s5 : the step is written to its log
-  s0 --> s11 : saving the summary fails (a<br/>full disk)
-  s7 --> s0 : opt-chat crashes or restarts,<br/>memory on or off or the write<br/>is cut short
-  s1 --> s3 : its memory opens
-  s3 --> s10 : Opt reads the view
-  s2 --> s11 : saving the summary fails (a<br/>full disk) or writing its chat<br/>fails (a full disk)
-  s3 --> s11 : saving the summary fails (a<br/>full disk)
-  s10 --> s11 : saving the summary fails (a<br/>full disk)
-  s0 --> s8 : with the fix, the step is<br/>written to its log
-  s1 --> s7 : with the fix, feeds its memory
-  s1 --> s6 : with the fix, feeds its memory
-  s0 --> s0 : its memory opens<br/>#160;<br/>with the fix, saving the<br/>summary fails (a full disk)
-  s6 --> s6 : with the fix, its log is<br/>deleted, a new subagent takes<br/>the name cannot happen at step<br/>3 of bug 3 or 4 of bug 6
-  s5 --> s5 : with the fix, writing its chat<br/>fails (a full disk)
-  s1 --> s1 : with the fix, its memory opens<br/>cannot happen at step 7 of bug<br/>7
-  s11 --> s11 : its log is deleted, a new<br/>subagent takes the name or<br/>feeds its memory or its memory<br/>opens
-  s6 --> s6 : its memory opens
-  s2 --> s2 : the step is written to its log<br/>or feeds its memory or its<br/>memory opens
-  s1 --> s1 : feeds its memory
-  class s0 works
-  class s1 works
-  class s2 fixed
-  class s3 fixed
-  class s4 fixed
-  class s5 works
-  class s6 works
-  class s7 works
-  class s8 works
-  class s9 works
-  class s10 fixed
-  class s11 fixed
-```
+While this was written, the model and reviews of it found nine bugs in
+drafts. Each is now a mutant in `formal/agentmem/mutants.sh`, which puts
+it back and expects its rule to break, and all but the last have a Go
+test that failed before the fix: the pump and closing idle chats each
+held the map's lock while waiting on one chat's disk; a write cut short
+swallowed the next step, memory on or, separately, off; a chat that
+couldn't open was told only to the terminal and zoom said the subagent
+didn't exist; a crash between a long step's parts lost the rest; a
+failed write to a subagent's chat stopped opt-chat; a new subagent took
+an old `.mem`; and a compaction's write failing between `fed`'s check
+and its feed left a step in memory only. Reviews and tests found two
+more: a zoom during a long write cut the step at a blank line, and an
+open that failed on a full disk kept the chat's lock, so it never opened
+again in that run.
 
 ## Prior art
 
