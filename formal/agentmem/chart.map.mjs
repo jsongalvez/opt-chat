@@ -1,4 +1,4 @@
-// Chart labels for AgentMem (formal/agentmem), for /statechart: AgentMemLocks.tla and AgentMemCrash.tla.
+// Chart labels for AgentMem (formal/agentmem), for /statechart: AgentMemLocks.tla, AgentMemCrash.tla and AgentMemRestart.tla.
 const k = (a) => JSON.stringify(a);
 const MM = k(["mm", ""]);
 const subj = (v, a) => (a[0] === "w" || a[0] === "b" ? a[1] : v.tgt[k(a)]);
@@ -44,6 +44,22 @@ function parse(log) {
   return out;
 }
 
+// A step's messages in a chat, as the spec's Parts: an even id has two.
+const parts = (id) => (id % 2 === 0 ? 2 : 1);
+const expand = (ids) => ids.flatMap((id) => (parts(id) === 2 ? [k([id, 0]), k([id, 1])] : [k([id, 0])]));
+const ends = (log) => {
+  let n = log.length;
+  while (n > 0 && !["full", "seal"].includes(log[n].t)) n--;
+  return n;
+};
+const held = (chat) => [...chat].filter((m) => m.p === 0).length;
+function wrongChat(chat, log) {
+  const all = expand(parse([...log].slice(0, ends(log))));
+  const got = [...chat].map((m) => k([m.id, m.p]));
+  return got.length > all.length || got.some((m, i) => m !== all[i]);
+}
+const cutMidStep = (chat) => chat.length > 0 && chat[chat.length].p + 1 < parts(chat[chat.length].id);
+
 export const readerActions = [];
 
 export function state(v, facts) {
@@ -57,9 +73,17 @@ export function state(v, facts) {
     const parsed = parse(v.log[s]);
     if (v.log[s].some((t) => t.t === "full" && !parsed.includes(t.id))) return `${s}'s next step swallowed by a cut one`;
   }
+  if (v.killed) return "opt-chat stopped by a subagent's memory";
+  for (const s of subs) if (wrongChat(v.chat[s], v.log[s])) return `${s}'s memory differs from its log`;
+  if (v.zres[1] === "view" && v.zres[2] === "torn") return "Opt read a step cut short";
+  for (const s of subs)
+    if (v.open.includes(s) && v.read[s] === ends(v.log[s]) && [...v.chat[s]].length < expand(parse([...v.log[s]].slice(0, ends(v.log[s])))).length)
+      return `${s}'s memory open, part of the log missing`;
   if (v.failed && !v.noticed) return "Memory failed, nobody told";
   for (const s of subs) if (cut(v.log[s])) return `${s}'s last write cut short`;
-  const behind = subs.filter((s) => fulls(v.log[s]) > v.chat[s].length);
+  for (const s of subs) if (cutMidStep(v.chat[s])) return `${s}'s memory cut mid-step`;
+  if ("on" in v && !v.on) return "Memory off: steps go to the log alone";
+  const behind = subs.filter((s) => fulls(v.log[s]) > held(v.chat[s]));
   if (subs.every((s) => v.log[s].length === 0)) return "Nothing written";
   if (behind.length) return `${behind.join(" and ")}: step on disk, memory behind`;
   return v.failed ? "Every step in memory, a failure said" : "Every step in memory";
@@ -67,12 +91,15 @@ export function state(v, facts) {
 
 const STEPS = {
   BuildEnd: "a summary comes back",
+  BuildFail: "saving the summary fails (a full disk)",
+  MemFail: "writing its chat fails (a full disk)",
+  Reuse: "its log is deleted, a new subagent takes the name",
   BuildIO: "the summary is saved to disk",
   BuildSc: "takes the chat's lock to save it",
   CloseAm: "waits for that memory's own lock",
   CloseIdle: "closes idle memories",
   CloseSc: "closes one, or skips it",
-  Crash: "opt-chat crashes",
+  Crash: "opt-chat crashes or restarts, memory on or off",
   FeedStep: "feeds its memory",
   Lock: "finds its entry",
   LockAm: "takes its own lock",

@@ -34,6 +34,11 @@ mutant NoWaitOnOthersIO MCFixed.cfg pump
 mutant NoWaitOnOthersIO MCFixed.cfg close
 mutant NoLostStep MCCrashFixed.cfg seal
 mutant FailureSurfaces MCCrashFixed.cfg notice
-mutant ChatIsLog MCFixed.cfg "" 'IN IF read[s] = 0 THEN SubSeq(st, Len(chat[s]) + 1, Len(st)) ELSE st' 'IN st'
+mutant ChatIsLog MCFixed.cfg "" 'IN IF read[s] = 0 THEN SubSeq(st, Held(chat[s]) + 1, Len(st)) ELSE st' 'IN st'
 mutant NoDeadlock MCFixed.cfg "" 'THEN Take(a, {MM, AM(t)}) /\ tgt'"'"' = [tgt EXCEPT ![a] = t] /\ Go(a, "cisc")' 'THEN Take(a, {MM}) /\ tgt'"'"' = [tgt EXCEPT ![a] = t] /\ Go(a, "ciam")'
+mutant NoLostStep MCRestartFixed.cfg offseal
+mutant Converges MCCrashFixed.cfg parts
+mutant FailureStaysLocal MCRestartFixed.cfg nofatal
+mutant ChatIsLog MCRestartFixed.cfg reuse
+mutant Converges MCRestartFixed.cfg "" "THEN UNCHANGED chat /\\ broken' = [broken EXCEPT ![s] = FALSE] /\\ open' = open \\ {s} /\\ read' = [read EXCEPT ![s] = 0]" "THEN UNCHANGED <<chat, broken, open>> /\\ read' = [read EXCEPT ![s] = @ + Len(Chunk(s))]"
 exit $miss

@@ -117,9 +117,14 @@ type Chat struct {
 	// again at quit.
 	compact compactor
 	role    chatRole // whose chat: the main one's, or a subagent's; see agentmem.go
+	broken  error    // a subagent's chat's write failed: it writes no more (failWrite)
 }
 
-func openChat(dir string) (*Chat, error) {
+func openChat(dir string) (*Chat, error) { return openChatAs(dir, mainRole{}) }
+
+// openChatAs opens the chat in dir as role's: a subagent's chat's failed
+// writes stop it, not opt-chat (failWrite).
+func openChatAs(dir string, role chatRole) (*Chat, error) {
 	for _, d := range []string{"main", "tree", "files", "btw", "usage"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
 			return nil, err
@@ -138,7 +143,7 @@ func openChat(dir string) (*Chat, error) {
 		dir: dir, lock: lock, tree: map[key]string{}, redo: map[key]bool{}, queued: map[key]bool{}, busy: map[key]bool{},
 		failing: map[key]*failure{}, changed: make(chan struct{}), jobs: defaultJobs,
 		view: view{lo: viewLo, hi: viewHi}, cview: view{lo: cviewLo, hi: cviewHi},
-		role: mainRole{},
+		role: role,
 	}
 	// By id, not by file: a day file is named by the clock, which can go back.
 	var msgs []Msg
@@ -265,6 +270,9 @@ func appendRaw(path string, b []byte) error {
 // appendDay appends each v as one line to sub/<today>.jsonl, in one write,
 // and fsyncs it.
 func (c *Chat) appendDay(sub string, vs ...any) {
+	if c.broken != nil {
+		return
+	}
 	var b []byte
 	var err error
 	for _, v := range vs {
@@ -275,9 +283,17 @@ func (c *Chat) appendDay(sub string, vs ...any) {
 		err = appendRaw(filepath.Join(c.dir, sub, time.Now().Format(time.DateOnly)+".jsonl"), b)
 	}
 	if err != nil {
-		// ponytail: a failed write is fatal; the log is history and must not have holes.
-		fatal("write %s: %v", sub, err)
+		c.failWrite(fmt.Errorf("write %s: %w", sub, err))
 	}
+}
+
+// failWrite ends a write to disk that failed. The main chat's log is
+// history and must have no holes, so opt-chat stops. A subagent's chat
+// stops writing, so its files stay a first part of what it held, and
+// agentMems.fed opens it again from them. c.mu held, or c not yet shared.
+func (c *Chat) failWrite(err error) {
+	c.role.writeFailed(err)
+	c.broken = err
 }
 
 // Log appends one message, splitting text too long for one. Its images
@@ -292,7 +308,7 @@ func (c *Chat) logRef(kind, text, ref string, images ...string) {
 }
 
 // logMsgs appends messages (their kind, text, date and images) in one
-// write, each split as Log splits it.
+// write, each split as Log splits it, its parts numbered from its Part.
 func (c *Chat) logMsgs(ms []Msg) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -300,8 +316,8 @@ func (c *Chat) logMsgs(ms []Msg) {
 	var parts []any
 	for _, m := range ms {
 		for j, part := range splitText(m.Text, clipMax) {
-			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: j, Imported: m.Imported}
-			if j == 0 {
+			p := Msg{I: len(c.msgs), Kind: m.Kind, Text: part, Size: len(m.Kind) + 2 + len(part), Date: m.Date, Ref: m.Ref, Part: m.Part + j, Imported: m.Imported}
+			if p.Part == 0 {
 				p.Images = m.Images
 			}
 			c.msgs = append(c.msgs, p)
@@ -413,6 +429,9 @@ func readView(b []byte) (savedView, error) {
 
 func (c *Chat) saveView() {
 	c.flushNodes() // first: the view may hold them
+	if c.broken != nil {
+		return
+	}
 	v := savedView{Keys: lo.Map(c.view.keys, func(k key, _ int) [2]int { return [2]int{k.L, k.I} }), Shrinking: c.view.shrinking}
 	var b []byte
 	if v.Shrinking {
@@ -423,10 +442,9 @@ func (c *Chat) saveView() {
 	tmp := filepath.Join(c.dir, "view.json.tmp")
 	os.Remove(tmp)
 	if err := appendRaw(tmp, b); err != nil { // written and synced before it replaces the old one
-		fatal("view.json: %v", err)
-	}
-	if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
-		fatal("view.json: %v", err)
+		c.failWrite(fmt.Errorf("view.json: %w", err))
+	} else if err := os.Rename(tmp, filepath.Join(c.dir, "view.json")); err != nil {
+		c.failWrite(fmt.Errorf("view.json: %w", err))
 	}
 }
 

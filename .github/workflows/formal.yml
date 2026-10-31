@@ -19,3 +19,5 @@ jobs:
           java-version: '21'
       - name: model-check subagent memory
         run: formal/agentmem/check.sh
+      - name: every property can fail
+        run: formal/agentmem/mutants.sh

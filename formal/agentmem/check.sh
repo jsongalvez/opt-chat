@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Model-checks AgentMem.tla against every property in PROPS, under each
-# config given (default MCFixed.cfg, then MCCrashFixed.cfg). TLC stops at the first broken
+# config given (default MCFixed.cfg, MCCrashFixed.cfg, then MCRestartFixed.cfg). TLC stops at the first broken
 # property; this prints its counterexample, drops it, and checks the rest
 # again. Exit status 1 if any property breaks. TRACE=1 prints whole states.
 set -euo pipefail
@@ -14,9 +14,9 @@ if [ ! -f "$JAR" ]; then
   echo "$SUM  $JAR.tmp" | sha256sum -c --quiet
   mv "$JAR.tmp" "$JAR"
 fi
-PROPS=(NoWaitOnOthersIO NoDeadlock ChatIsLog NoLostStep FailureSurfaces)
+PROPS=(NoWaitOnOthersIO NoDeadlock ChatIsLog NoLostStep FailureSurfaces Converges FailureStaysLocal)
 CONFIGS=("$@")
-[ ${#CONFIGS[@]} -eq 0 ] && CONFIGS=(MCFixed.cfg MCCrashFixed.cfg)
+[ ${#CONFIGS[@]} -eq 0 ] && CONFIGS=(MCFixed.cfg MCCrashFixed.cfg MCRestartFixed.cfg)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 fail=0

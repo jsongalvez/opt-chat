@@ -85,8 +85,9 @@ type chatRole interface {
 	done()             // one taken has ended
 	pumped(waits bool) // after a pump: whether lines wait to be built
 	warn(main *hub, sound bool, s string)
-	whose() string     // what a compaction is told of whose chat it is
-	mergedHeads() bool // a merged line not built shows its messages' heads
+	writeFailed(err error) // a write to the chat's files failed
+	whose() string         // what a compaction is told of whose chat it is
+	mergedHeads() bool     // a merged line not built shows its messages' heads
 }
 
 // mainRole is the main chat's: gate, if subagents have memory, waits for
@@ -105,6 +106,9 @@ func (mainRole) warn(main *hub, sound bool, s string) {
 	if sound {
 		main.sound(soundError)
 	}
+}
+func (mainRole) writeFailed(err error) {
+	fatal("%v", err) // ponytail: the log is history and must not have holes
 }
 func (mainRole) whose() string     { return "" }
 func (mainRole) mergedHeads() bool { return false }
@@ -127,6 +131,9 @@ func (s *subChat) warn(_ *hub, sound bool, msg string) {
 	if sound {
 		s.hub.sound(soundError)
 	}
+}
+func (s *subChat) writeFailed(err error) {
+	s.warn(nil, true, fmt.Sprintf("%v; zoom(\"%s\") gives its whole log until the chat opens again", err, s.name))
 }
 func (s *subChat) whose() string {
 	return fmt.Sprintf("This is subagent [%s]'s own chat, not the main one. Its kinds: task, its task; "+
@@ -236,6 +243,9 @@ func (m *agentMems) lock(name string) *agentMem {
 // and feeds it to its chat, holding the subagent's lock over both.
 func (m *agentMems) appendStep(name, path string, b []byte) error {
 	if m == nil {
+		if !endsBlank(path) { // as below: memory may be on after a restart
+			b = append([]byte("\n\n"), b...)
+		}
 		return appendRaw(path, b)
 	}
 	am := m.lock(name)
@@ -245,7 +255,7 @@ func (m *agentMems) appendStep(name, path string, b []byte) error {
 	err := appendRaw(path, b)
 	am.sealed = err == nil
 	if err == nil {
-		if _, ferr := m.fed(name, am); ferr != nil {
+		if _, ferr := m.fed(name, am); ferr != nil && !errors.Is(ferr, errMemBroken) { // that one is said as it happens
 			m.main.hub.notice("warn", "[%s] memory: %v", name, ferr)
 		}
 	}
@@ -270,8 +280,10 @@ func (m *agentMems) chat(name string) (*Chat, error) {
 // crash between the log and the chat loses none and doubles none.
 func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	am.used.Store(time.Now().UnixNano())
-	if am.c != nil {
-		return am.c, m.feed(name, am, am.c)
+	m.closeBroken(am) // a compaction's write failed since: open it again from its files
+	if sc := am.c; sc != nil {
+		err := m.feed(name, am, sc)
+		return sc, cmp.Or(m.closeBroken(am), err)
 	}
 	dir := filepath.Join(m.main.dir, "agents")
 	if _, err := os.Stat(filepath.Join(dir, name+".log")); os.IsNotExist(err) {
@@ -279,17 +291,20 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	} else if err != nil {
 		return nil, err
 	}
-	sc, err := openChat(filepath.Join(dir, name+".mem"))
+	sc, err := openChatAs(filepath.Join(dir, name+".mem"), &subChat{name: name, hub: m.main.hub, gate: &m.gate})
 	if err != nil {
 		return nil, err
 	}
-	sc.role = &subChat{name: name, hub: m.main.hub, gate: &m.gate}
 	sc.view.lo, sc.view.hi = agentViewLo, agentViewHi
 	sc.mu.Lock()
 	sc.view.check(sc)
 	sc.mu.Unlock()
-	if err := m.feed(name, am, sc); err != nil { // before its first pump: the context it builds on is whole
+	if err := m.feed(name, am, sc); err != nil || sc.broken != nil { // before its first pump: the context it builds on is whole
 		sc.lock.Close()
+		am.read = 0
+		if sc.broken != nil {
+			return nil, fmt.Errorf("%w: %v", errMemBroken, sc.broken)
+		}
 		return nil, err
 	}
 	m.mu.Lock()
@@ -300,6 +315,26 @@ func (m *agentMems) fed(name string, am *agentMem) (*Chat, error) {
 	am.c = sc
 	m.mu.Unlock()
 	return sc, nil
+}
+
+// closeBroken closes the subagent's chat if a write to it failed, to be
+// opened again from its files, and says why. am.mu held.
+func (m *agentMems) closeBroken(am *agentMem) error {
+	if am.c == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sc := am.c
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.broken == nil {
+		return nil
+	}
+	sc.compact = nil
+	sc.lock.Close()
+	am.c, am.read = nil, 0
+	return fmt.Errorf("%w: %v", errMemBroken, sc.broken)
 }
 
 // feed logs in sc the steps written to the subagent's log since it was
@@ -327,23 +362,33 @@ func (m *agentMems) feed(name string, am *agentMem, sc *Chat) error {
 		b = b[:j+2]
 	}
 	steps := lo.Filter(parseSteps(b), func(s step, _ int) bool { return s.Kind != "thinking" })
-	if am.read == 0 { // opened: skip what the chat holds
-		sc.mu.Lock()
-		held := lo.CountBy(sc.msgs, func(m Msg) bool { return m.Part == 0 })
-		sc.mu.Unlock()
-		steps = steps[min(held, len(steps)):]
-	}
-	am.read += int64(len(b))
-	if len(steps) == 0 {
-		return nil
-	}
-	sc.logMsgs(lo.Map(steps, func(s step, _ int) Msg {
+	msg := func(s step) Msg {
 		m := Msg{Kind: s.Kind, Text: s.Text, Ref: s.Ref}
 		if s.At > 0 {
 			m.Date = time.UnixMilli(s.At)
 		}
 		return m
-	}))
+	}
+	var ms []Msg
+	if am.read == 0 { // opened: skip what the chat holds, and end a step a crash cut short in it
+		sc.mu.Lock()
+		held := lo.CountBy(sc.msgs, func(m Msg) bool { return m.Part == 0 })
+		if held > 0 && held <= len(steps) {
+			parts := splitText(steps[held-1].Text, clipMax) // as logMsgs split it
+			for j := sc.msgs[len(sc.msgs)-1].Part + 1; j < len(parts); j++ {
+				m := msg(steps[held-1])
+				m.Text, m.Part = parts[j], j
+				ms = append(ms, m)
+			}
+		}
+		sc.mu.Unlock()
+		steps = steps[min(held, len(steps)):]
+	}
+	am.read += int64(len(b))
+	ms = append(ms, lo.Map(steps, func(s step, _ int) Msg { return msg(s) })...)
+	if len(ms) > 0 {
+		sc.logMsgs(ms)
+	}
 	return nil
 }
 
@@ -423,6 +468,9 @@ func (a *Agent) ZoomAgent(name string) string {
 		return "No subagent []."
 	}
 	sc, err := a.mems.chat(name)
+	if errors.Is(err, errMemBroken) {
+		return memFailed(name, err) + " Its whole log:\n" + agentPlain(a.chat.dir, name)
+	}
 	if err != nil {
 		return memFailed(name, err)
 	}
@@ -456,10 +504,17 @@ func (a *Agent) ZoomAgentLine(name string, id, n int) (string, []string) {
 // errNoLog: the name has no log, so no subagent.
 var errNoLog = errors.New("no log")
 
+// errMemBroken: a write to the subagent's chat failed; it is closed, and
+// opened again from its files when next needed.
+var errMemBroken = errors.New("a write failed")
+
 // memFailed is what zoom says when the subagent name's chat can't open.
 func memFailed(name string, err error) string {
 	if errors.Is(err, errNoLog) {
 		return fmt.Sprintf("No subagent [%s].", name)
+	}
+	if errors.Is(err, errMemBroken) {
+		return fmt.Sprintf("[%s]'s memory failed: %v.", name, err)
 	}
 	return fmt.Sprintf("[%s]'s memory failed to open: %v.", name, err)
 }

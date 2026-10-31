@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -532,5 +533,144 @@ func TestAgentMemOpenFails(t *testing.T) {
 	}
 	if z := zoomTool(a, "X", 0); strings.Contains(z, "No subagent") || !strings.Contains(z, "[X]") {
 		t.Errorf("zoom(\"X\"): %q", z)
+	}
+}
+
+// memDay is the day file a subagent's chat logs its messages to today.
+func memDay(c *Chat, name string) string {
+	return filepath.Join(c.dir, "agents", name+".mem", "main", time.Now().Format(time.DateOnly)+".jsonl")
+}
+
+// closeMem closes the subagent's chat as opt-chat's exit would, so another
+// agentMems can open its files.
+func closeMem(t *testing.T, a *Agent, name string) {
+	t.Helper()
+	am := a.mems.lock(name)
+	if am.c != nil {
+		am.c.lock.Close()
+	}
+	am.mu.Unlock()
+}
+
+// memTexts is the subagent's chat's messages, each step's parts joined.
+func memTexts(t *testing.T, a *Agent, name string) []string {
+	t.Helper()
+	sc, err := a.mems.chat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	var out []string
+	for _, m := range sc.msgs {
+		if m.Part == 0 {
+			out = append(out, m.Text)
+		} else {
+			out[len(out)-1] += m.Text
+		}
+	}
+	return out
+}
+
+// With -agent-memory=false a step after one cut short still starts a step
+// of its own, so the chat fed from the log once memory is on again has it
+// (AgentMem.tla, NoLostStep, "offseal").
+func TestAgentMemOffSeals(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	os.WriteFile(filepath.Join(c.dir, "agents", "O.log"), []byte("task: work\n\ntool@1761134400001#toolu_1: Bash {\"comm"), 0o600)
+	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a.agentWrite("O", "agent", "after the crash")
+	a.mems = newAgentMems(c, 1) // a restart with memory on
+	got := memTexts(t, a, "O")
+	if len(got) == 0 || got[len(got)-1] != "after the crash" {
+		t.Errorf("the chat ends %q", got)
+	}
+}
+
+// A crash or a full disk in the write of a long step's parts leaves some of
+// them on disk; the chat opened again ends the step, not skips the rest
+// (AgentMem.tla, Converges, "parts").
+func TestAgentMemTornParts(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	a.agentWrite("B", "task", "work")
+	long := strings.Repeat("0123456789\n", 7000) // 77,000 characters: three parts
+	a.agentWrite("B", "echo", long)
+	closeMem(t, a, "B")
+	f := memDay(c, "B")
+	b, _ := os.ReadFile(f)
+	lines := strings.SplitAfter(strings.TrimSuffix(string(b), "\n"), "\n")
+	os.WriteFile(f, []byte(strings.Join(lines[:len(lines)-1], "")), 0o600) // the last part lost
+	a = memAgent(c)
+	a.agentWrite("B", "agent", "done")
+	if got := memTexts(t, a, "B"); len(got) != 3 || got[1] != long || got[2] != "done" {
+		t.Errorf("%d steps, the echo %d of %d bytes", len(got), len(got[min(1, len(got)-1)]), len(long))
+	}
+}
+
+// A write to a subagent's chat that fails stops neither opt-chat nor the
+// subagent: the page is told, zoom gives the whole log, and once the disk
+// takes writes again the chat has every step, once (AgentMem.tla,
+// FailureStaysLocal, Converges, "nofatal"). fatal exits, so the test runs
+// in a child process.
+func TestAgentMemWriteFails(t *testing.T) {
+	if dir := os.Getenv("AGENTMEM_CHILD"); dir != "" {
+		c, _ := fakeChat(t, dir, 100)
+		c.hub = newHub()
+		var mu sync.Mutex
+		var notes []string
+		c.hub.print = func(v any) {
+			if n, ok := v.(noticeUpdate); ok {
+				mu.Lock()
+				notes = append(notes, n.S)
+				mu.Unlock()
+			}
+		}
+		a := memAgent(c)
+		os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+		a.agentWrite("W", "task", "work")
+		os.Chmod(memDay(c, "W"), 0o400) // as a full disk: the write fails
+		a.agentWrite("W", "agent", "one")
+		if z := zoomTool(a, "W", 0); !strings.Contains(z, "agent: one") {
+			t.Errorf("zoom(\"W\") with its memory failing: %q", z)
+		}
+		os.Chmod(memDay(c, "W"), 0o600)
+		a.agentWrite("W", "agent", "two")
+		if got := strings.Join(memTexts(t, a, "W"), ","); got != "work,one,two" {
+			t.Errorf("the chat once the disk takes writes: %q", got)
+		}
+		mu.Lock()
+		if !strings.Contains(strings.Join(notes, "\n"), "[W] memory") {
+			t.Errorf("no notice of W's memory failing: %q", notes)
+		}
+		mu.Unlock()
+		fmt.Println("AGENTMEM_ALIVE")
+		return
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root writes to a read-only file")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestAgentMemWriteFails$", "-test.v")
+	cmd.Env = append(os.Environ(), "AGENTMEM_CHILD="+t.TempDir())
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "AGENTMEM_ALIVE") {
+		t.Errorf("the child: %v\n%s", err, out)
+	}
+}
+
+// A name whose log is gone but whose chat stays is not given again: a new
+// subagent under it would have its steps taken for the old chat's.
+func TestAgentMemNameReuse(t *testing.T) {
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a := memAgent(c)
+	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
+	a.agentWrite("N", "task", "old")
+	closeMem(t, a, "N")
+	os.Remove(filepath.Join(c.dir, "agents", "N.log"))
+	a = memAgent(c)
+	if name := a.freeName("N"); name == "N" {
+		t.Errorf("spawn gives the name N again, with N.mem left")
 	}
 }
