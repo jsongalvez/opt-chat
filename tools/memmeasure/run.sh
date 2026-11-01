@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Measure subagent memory designs a (a tree per subagent) and b (steps in
 # the main chat) on a copy of a real chat, with the real summarizer and
-# real turns. Spends real money: about $1 of Haiku and $10 of Opus for
-# 636 messages, 1,303 steps and 18 questions. Never point it at a live chat.
+# real turns. Spends real money, measured on 636 messages and 1,303 steps:
+# about $5 of Haiku per design, $4 of Opus for 10 probes, and $0.30 to
+# $0.60 of Opus per question. Never point it at a live chat.
 #
 #   tools/memmeasure/run.sh SRC DATA QUESTIONS START END AGENTS
 #   e.g. run.sh ~/.opt-chat private/mm private/mm-questions.jsonl 13312 13948 A,B,C
