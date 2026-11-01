@@ -77,6 +77,7 @@ func runEval(a *Agent, in, out string, par int) error {
 			r, err := a.btw(lines, nil, message{kind: "user", text: text}, before)
 			q["answer"], q["tools"], q["recalled"] = r.answer, r.tools, ids
 			q["cost"], q["requests"], q["secs"] = r.result.Cost, r.result.Turns, time.Since(start).Seconds()
+			q["ack"], q["usage"] = r.ack, r.result.Usage
 			if err != nil {
 				q["err"] = err.Error()
 			}

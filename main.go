@@ -63,6 +63,10 @@ func main() {
 	evalPath := flag.String("eval", "", "ask this file's questions (JSON lines with \"q\") about the chat as side questions, write the answers to -eval-out, and quit")
 	evalOut := flag.String("eval-out", "answers.jsonl", "where -eval writes its answers")
 	evalPar := flag.Int("eval-par", 4, "questions -eval asks at once")
+	replay := flag.String("replay", "", "feed this file's messages into the chat, build their lines, ask its probes, write to -replay-out, and quit (tools/memmeasure)")
+	replayOut := flag.String("replay-out", "replay-out.jsonl", "where -replay writes its probes and the final view's shape")
+	replayAgents := flag.String("replay-agents", "", "with -replay, subagents whose chats to build after the messages, comma-separated")
+	stepsInMain := flag.Bool("agent-steps-in-main", false, "the prompt says subagents' steps are messages of kind step in the chat itself (tools/memmeasure's design b)")
 	flag.Parse()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
@@ -155,6 +159,21 @@ func main() {
 	}
 	if a.mcpConfig, a.agentMCP, err = serveMCP(a); err != nil {
 		fatal("mcp: %v", err)
+	}
+	if *stepsInMain {
+		a.system = stepsInMainPrompt(a.system)
+	}
+	if *replay != "" {
+		var names []string
+		if *replayAgents != "" {
+			names = strings.Split(*replayAgents, ",")
+		}
+		err := runReplay(a, hb, *replay, *replayOut, names, *jobs)
+		a.quit()
+		if err != nil {
+			fatal("replay: %v", err)
+		}
+		return
 	}
 	if *evalPath != "" { // no turn, no compaction and no subagent: the chat as it stands
 		err := runEval(a, *evalPath, *evalOut, *evalPar)

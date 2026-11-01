@@ -98,6 +98,7 @@ type asideRun struct {
 	answer string
 	result event
 	tools  []string
+	ack    usage // the call's first request, the view's
 }
 
 // btw runs the call: the view, then whatever the call needs, then the
@@ -131,6 +132,7 @@ func (a *Agent) btw(lines []string, earlier []Aside, m message, before int) (r a
 	if err := a.ack(p, first, &u, nil); err != nil {
 		return r, err
 	}
+	r.ack = u
 	p.send(second...)
 	for {
 		e, ok := p.next()
