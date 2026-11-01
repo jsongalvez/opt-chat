@@ -7,6 +7,14 @@
 #   tools/memmeasure/run.sh SRC DATA QUESTIONS START END AGENTS
 #   e.g. run.sh ~/.opt-chat private/mm private/mm-questions.jsonl 13312 13948 A,B,C
 #
+# Gotchas: the build takes about 2 hours per design at 8 jobs and counts
+# against the plan's usage; a limit mid-run is waited out (failed lines are
+# tried again), but probes or questions it hits come back with "err": rerun
+# them with prepare.py --prebuilt DATA into a fresh dir, which builds nothing.
+# A prebuilt replay's views differ from a message-by-message build's (the
+# view's merges depend on when lines arrive), so compare designs within one
+# mode, never across.
+#
 # QUESTIONS: JSON lines {"id", "type": "sub"|"user", "q", "gold": [substrings]};
 # drawn from a real chat, so keep it out of git (private/).
 set -euo pipefail
