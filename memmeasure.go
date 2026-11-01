@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // -replay measures a memory design on a copy of a chat (tools/memmeasure).
@@ -81,7 +83,7 @@ func runReplay(a *Agent, hb *hub, in, out string, agents []string, jobs int) err
 			waitBuilt(c)
 			c.mu.Lock()
 			lines := c.callView()
-			p := probePoint{q: item.Probe, before: len(c.msgs), lines: lines, bytes: c.cview.size()}
+			p := probePoint{q: item.Probe, before: len(c.msgs), lines: lines, bytes: lo.SumBy(lines, func(l string) int { return len(l) + 1 })}
 			c.mu.Unlock()
 			probes = append(probes, p)
 			dim(fmt.Sprintf("[replay] probe %d at message %d: %d lines, %d bytes, %s", len(probes), p.before, len(lines), p.bytes, time.Since(start).Round(time.Second)))
@@ -98,13 +100,17 @@ func runReplay(a *Agent, hb *hub, in, out string, agents []string, jobs int) err
 	waitBuilt(c)
 	mainSecs := time.Since(start).Seconds()
 	agentStart := time.Now()
-	for _, name := range agents {
+	var chats []*Chat
+	for _, name := range agents { // all at once, as subagents running side by side
 		ac, err := a.mems.chat(name)
 		if err != nil {
 			return fmt.Errorf("%s: %v", name, err)
 		}
+		chats = append(chats, ac)
+	}
+	for i, ac := range chats {
 		waitBuilt(ac)
-		dim(fmt.Sprintf("[replay] %s built, %s", name, time.Since(agentStart).Round(time.Second)))
+		dim(fmt.Sprintf("[replay] %s built, %s", agents[i], time.Since(agentStart).Round(time.Second)))
 	}
 	agentSecs := time.Since(agentStart).Seconds()
 
@@ -136,19 +142,21 @@ func runReplay(a *Agent, hb *hub, in, out string, agents []string, jobs int) err
 		covered += 1 << k.L
 	}
 	put(map[string]any{"final": true, "msgs": len(c.msgs), "viewLines": len(c.view.keys), "viewBytes": c.view.size(),
-		"callViewBytes": c.cview.size(), "last50UserLevels": levels, "last50UserMeanCover": float64(covered) / float64(max(len(users), 1)),
+		"callViewBytes": lo.SumBy(c.callView(), func(l string) int { return len(l) + 1 }), "last50UserLevels": levels, "last50UserMeanCover": float64(covered) / float64(max(len(users), 1)),
 		"failing": len(c.failing), "mainBuildSecs": mainSecs, "agentBuildSecs": agentSecs})
 	return nil
 }
 
 // waitBuilt waits until the chat has no line waiting to be built or being
-// built, for two looks in a row.
+// built, for two looks in a row. A line that failed and waits to be tried
+// again still counts as waiting: a usage limit must not let a probe see a
+// view half built.
 func waitBuilt(c *Chat) {
 	quiet := 0
 	for quiet < 2 {
 		time.Sleep(time.Second)
 		c.mu.Lock()
-		done := c.idle() || (len(c.busy) == 0 && !c.waiting())
+		done := c.idle()
 		c.mu.Unlock()
 		if done {
 			quiet++

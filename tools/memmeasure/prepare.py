@@ -10,7 +10,13 @@ there. replay.jsonl in each holds the rest up to --end, for opt-chat
 the named subagents' steps are merged in by date and their logs removed,
 so nothing but the main chat holds them.
 
-Usage: prepare.py SRC OUT --start 13312 --end 13948 --agents A,B --probes 10
+With --prebuilt OLD (an OUT whose replays ran to the end), each copy gets
+OLD's whole tree, and a gets OLD's subagent chats: a replay then builds
+nothing, and each probe sees every line before it built, as the views grow
+message by message. That splits the summarizer's cost (the first run) from
+the probes' (the second), and a usage limit mid-build spoils neither.
+
+Usage: prepare.py SRC OUT --start 13312 --end 13948 --agents A,B --probes 10 [--prebuilt OLD]
 """
 import argparse
 import glob
@@ -46,7 +52,9 @@ def copy_chat(src, dst, start):
     msgs = [m for m in read_jsonl(sorted(glob.glob(f"{src}/main/*.jsonl"))) if m["i"] < start]
     write_by_day(f"{dst}/main", msgs, lambda m: m["date"][:10])
     days = {m["i"]: m["date"][:10] for m in msgs}
-    nodes = [n for n in read_jsonl(sorted(glob.glob(f"{src}/tree/*.jsonl"))) if (n["i"] + 1) << n["l"] <= start]
+    # A line marked to redo would be built again in the copy, across the
+    # whole history: the copy keeps its text as built instead.
+    nodes = [n for n in read_jsonl(sorted(glob.glob(f"{src}/tree/*.jsonl"))) if (n["i"] + 1) << n["l"] <= start and not n.get("redo")]
     write_by_day(f"{dst}/tree", nodes, lambda n: days[n["i"] << n["l"]])
     os.makedirs(f"{dst}/usage")
 
@@ -59,6 +67,7 @@ def main():
     ap.add_argument("--end", type=int, required=True)
     ap.add_argument("--agents", required=True)
     ap.add_argument("--probes", type=int, default=10)
+    ap.add_argument("--prebuilt")
     o = ap.parse_args()
     if o.start & 1023:
         raise SystemExit("--start must be a multiple of 1024, so the cut tree is whole")
@@ -91,6 +100,11 @@ def main():
             if name in names and design == "b" and base.endswith(".log"):
                 continue
             (shutil.copytree if os.path.isdir(p) else shutil.copy2)(p, f"{dst}/agents/{base}")
+        if o.prebuilt:
+            shutil.rmtree(f"{dst}/tree")
+            shutil.copytree(f"{o.prebuilt}/{design}/tree", f"{dst}/tree")
+            for n in names if design == "a" else []:
+                shutil.copytree(f"{o.prebuilt}/a/agents/{n}.mem", f"{dst}/agents/{n}.mem", ignore=shutil.ignore_patterns("lock", "usage"))
         with open(f"{o.out}/{design}.replay.jsonl", "w") as f:
             for k, (_, is_step, _, m) in enumerate(timeline):
                 if k in at:
