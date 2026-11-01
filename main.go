@@ -359,6 +359,7 @@ func systemPrompt(agentsMD, optMCP string, wake, owed, agentMem bool) string {
 	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
 	if !agentMem {
 		s = strings.Replace(s, zoomAgentLines, zoomAgentWhole, 1)
+		s = strings.Replace(s, searchAgentLines, "\n  its words\n", 1)
 	}
 	if optMCP != "" {
 		const after = "Change or drop a line only when the user asks.\n"
