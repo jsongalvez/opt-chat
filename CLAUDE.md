@@ -45,6 +45,8 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
 | `agentmem.go` | subagents' memory: each one's chat summarized into a tree of its own, `zoom("Name")` and `zoom("Name:id", n)` |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
+| `owed.go` | the owed list: the `owe` tool, `/owed` and `/done`, kept in `<dir>/owed.jsonl` |
+| `eval.go`, `evalcompact.go`, `eval/` | memory evals: side questions (`-eval`), lines built again (`-eval-compact`) |
 | `hub.go`, `web.go` | updates to pages and the terminal; the page's server and its guards |
 | `find.go` | the page's find (Ctrl/Cmd+F): matches in the whole log, and the log around one |
 | `tree.go` | the page's view mode (the view, line by line, and its zooms) and `/tree`, the whole memory |
@@ -52,6 +54,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `import.go` | importing past chats |
 | `ccconfig.go`, `control.go`, `perms.go`, `limits.go` | the user's Claude Code setup, Claude Code's own lists, permission modes, usage limits |
 | `limitresume.go` | a usage limit's reset time, read from its message; the resume at the reset, kept in `<dir>/resume.json` |
+| `formal/limitresume/` | a TLA+ model of the resume at the reset; the `limit-resume` skill says when and how to run it |
 | `formal/agentmem/` | a TLA+ model of subagents' memory: feeds, zooms, the pump, closing, crashes; the `agent-memory` skill says when and how to run it |
 | `prompt.md` | the system prompt |
 | `web/` | the page: Preact and htm, no build step; `web/vendor/` is vendored as is |

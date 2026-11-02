@@ -173,7 +173,7 @@ func TestAgentMemOff(t *testing.T) {
 				zoom = tl["description"].(string)
 			}
 		}
-		prompt := systemPrompt("", "", false, mem)
+		prompt := systemPrompt("", "", false, false, mem)
 		if lines := strings.Contains(zoom, `zoom("Name:id", n)`); lines != mem || strings.Contains(prompt, `zoom("Name:id", n)`) != mem {
 			t.Errorf("memory %v: the zoom tool says %q; the prompt offers lines: %v", mem, zoom, !lines)
 		}

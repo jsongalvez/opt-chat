@@ -53,8 +53,8 @@ cache over.
   goes on by itself at the next start; one you stopped, when Opt tells it.
 - `/reload` (or `kill -USR1`) rebuilds opt-chat from its source and, once
   the chat is idle, restarts it in place: same terminal, port and page.
-- `-import` brings in past chats from Claude Code, Codex, or a Claude or
-  ChatGPT export.
+- `-import` brings in past chats from Claude Code, Codex, OpenCode, or a
+  Claude or ChatGPT export.
 - The bar shows how big the memory is, the last turn's tokens and your
   plan's usage limits.
 - The page listens on 127.0.0.1 only, behind a secret key.
@@ -68,14 +68,20 @@ cache over.
 | `-model`, `-effort` | `fable`, `high` | model and effort for turns |
 | `-agent-model`, `-agent-effort` | `opus`, `high` | for subagents |
 | `-agent-compact-max` | `400000` | compact a subagent's context past this, between two steps; `0`: never |
-| `-compact-model`, `-compact-effort`, `-compact-bare` | `sonnet`, `medium`, on | for summaries (the recipe's: `haiku`); bare: on another model than the turns', no tools, so Claude Code's tool reminders stay out |
+| `-compact-model`, `-compact-effort` | `sonnet`, `medium` | for summaries (the recipe's: `haiku`) |
+| `-compact-nice` | `10` | summaries' CPU priority under `nice` (`0`: off) |
+| `-compact-bare` | on | summaries on another model than turns list no tools, so Claude Code's tool reminders stay out of them |
+| `-compact-copied` | on | ask a summary again when it copies a commit, long number or file name from its context |
 | `-permission-mode` | `auto` | `manual`, `acceptEdits` or `auto` |
 | `-tools` | `Bash,Read,Edit,Write,WebSearch,WebFetch` | Claude Code tools |
 | `-claude-config` | on | your skills, plugins, MCP servers and settings |
 | `-claude-md`, `-wake` | on | the CLAUDE.md files of the folders Opt works in; wake-ups |
+| `-owed` | on | Opt's owed list, outside memory: each item cites your message; you close one (`/owed`, `/done N`), or Opt does once you confirm it; items are mine, waiting or parked |
+| `-redo` | | at start, rebuild the lines that match a regexp their message doesn't: claims a summary added |
 | `-resume-at-reset` | on | at the plan's usage-limit reset, start a turn and resume the subagents it stopped (`-reset-grace`, 90s); plan limits only, not spend, credit or 429 errors |
 | `-auto-resume` | on | resume a cut-off turn and subagents at start |
 | `-import` | | import past chats first; see `-import-since`, `-import-tools`, `-import-skip` in the guide |
+| `-import-only` | off | with `-import`: write what it imports and exit |
 | `-addr` | last run's port | `127.0.0.1:port` |
 | `-open`, `-sounds` | on | open the page in the browser; play what happens from [peon-ping](https://github.com/PeonPing/peon-ping)'s sound pack |
 | `-recall` | `8` | raw messages sharing your message's rare words, given to each turn |

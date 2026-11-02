@@ -105,7 +105,7 @@ func TestSearchAgentsOff(t *testing.T) {
 				desc = tl["description"].(string)
 			}
 		}
-		prompt := systemPrompt("", "", false, mem)
+		prompt := systemPrompt("", "", false, false, mem)
 		if strings.Contains(desc, "subagent") != mem || strings.Contains(prompt, "subagent whose chat holds it") != mem {
 			t.Errorf("memory %v: search says %q; the prompt names subagents' chats: %v", mem, desc, !mem)
 		}

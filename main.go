@@ -42,16 +42,20 @@ func main() {
 	jobs := flag.Int("jobs", defaultJobs, "compactions running at once, the chat's before an import's")
 	agentMem := flag.Bool("agent-memory", true, "summarize each subagent's chat into a tree of its own in <dir>/agents/<Name>.mem, as the chat's: zoom(\"Name\") gives its view, not its whole log")
 	agentJobs := flag.Int("agent-jobs", defaultAgentJobs, "compactions running at once in all subagents' chats together, while the chat has none waiting")
+	ccopied := flag.Bool("compact-copied", true, "ask a compaction again, once, when its line holds a commit, a long number or a file name that its context has and its input doesn't")
+	cnice := flag.Int("compact-nice", 10, "run compactions under nice -n this, so turns keep the CPU on a busy machine (0: off)")
 	perm := flag.String("permission-mode", "auto", "Claude Code permission mode to start in: manual, acceptEdits or auto (Shift+Tab cycles them)")
 	tools := flag.String("tools", "Bash,Read,Edit,Write,WebSearch,WebFetch", "Claude Code tools")
 	ownConfig := flag.Bool("claude-config", true, "give turns and subagents your Claude Code skills, plugins, MCP servers and settings (never its hooks, CLAUDE.md or memory)")
 	claudeMd := flag.Bool("claude-md", true, "with -claude-config, give turns and subagents the CLAUDE.md files of the folders they work in (never ~/.claude/CLAUDE.md)")
+	owed := flag.Bool("owed", true, "keep Opt's owed list in <dir>/owed.jsonl: what the user asked for and Opt hasn't done, each citing the user's message; only the user closes an item (/done)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
 	resumeAtReset := flag.Bool("resume-at-reset", true, "when the plan's usage limit stops Opt's turn or a subagent, start a turn at the reset and resume the subagents, from <dir>/resume.json")
 	resetGrace := flag.Duration("reset-grace", 90*time.Second, "how long after the reset -resume-at-reset waits")
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
+	importOnly := flag.Bool("import-only", false, "with -import: write what it imports and exit, without starting the chat")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
 	importSkip := flag.String("import-skip", "", "skip sessions whose directory (or a chat's title) contains any of these, comma-separated")
@@ -63,6 +67,9 @@ func main() {
 	evalPath := flag.String("eval", "", "ask this file's questions (JSON lines with \"q\") about the chat as side questions, write the answers to -eval-out, and quit")
 	evalOut := flag.String("eval-out", "answers.jsonl", "where -eval writes its answers")
 	evalPar := flag.Int("eval-par", 4, "questions -eval asks at once")
+	redo := flag.String("redo", "", "at start, build again each message's line that matches this regular expression while its message doesn't, and the lines built on them: a claim its compaction added")
+	evalCompact := flag.String("eval-compact", "", "build again the tree lines this file names (JSON lines with \"l\", \"i\", \"runs\"), as compactions would now, write them to -eval-out without keeping them, and quit")
+	expRelay := flag.Bool("experimental-relay", false, "experimental: route calls through a loopback relay that marks the view's first part for the cache itself, saving the extra \"ok\" request each call spends on it (see relay.go)")
 	flag.Parse()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
@@ -94,6 +101,9 @@ func main() {
 	}
 	if *jobs < 1 || *agentJobs < 1 {
 		fatal("-jobs and -agent-jobs must be 1 or more")
+	}
+	if *importOnly && *importPath == "" {
+		fatal("-import-only needs -import")
 	}
 	if *agentCap != 0 && (*agentCap < windowMin || *agentCap > windowMax) {
 		fatal("-agent-compact-max must be 0, or from %d to %d", windowMin, windowMax)
@@ -128,6 +138,9 @@ func main() {
 		case err != nil:
 			fatal("import: %v", err)
 		}
+		if *importOnly {
+			return
+		}
 	}
 	agentsMD := filepath.Join(*dir, "AGENTS.md")
 	hb := newHub()
@@ -140,12 +153,18 @@ func main() {
 		hb.print = webPrinter()
 	}
 	h := &harness{}
-	a := &Agent{chat: c, system: systemPrompt(agentsMD, optMCP, *wake, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
-		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cbare: *cbare, perm: *perm, cwd: *cwd, files: was, optMCP: optMCP, claudeJSON: claudeJSON, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, mcpAgents: saved.MCPAgents, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
+	a := &Agent{chat: c, system: systemPrompt(agentsMD, optMCP, *wake, *owed, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
+		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, ccopied: *ccopied, perm: *perm, cwd: *cwd, files: was, optMCP: optMCP, claudeJSON: claudeJSON, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, mcpAgents: saved.MCPAgents, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
 		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	if *agentMem {
 		a.mems = newAgentMems(c, *agentJobs)
+	}
+	if *expRelay {
+		// OPT_CHAT_RELAY_TRACE: a file for each request's shape, never its text.
+		if a.relay, err = startRelay("https://api.anthropic.com", os.Getenv("OPT_CHAT_RELAY_TRACE")); err != nil {
+			warn("-experimental-relay is off: %v", err)
+		}
 	}
 	h.agent = a
 	if *hideEmail {
@@ -163,6 +182,21 @@ func main() {
 			fatal("eval: %v", err)
 		}
 		return
+	}
+	if *evalCompact != "" { // nothing kept: the lines go to -eval-out
+		err := runEvalCompact(a, *evalCompact, *evalOut, *evalPar)
+		a.quit()
+		if err != nil {
+			fatal("eval-compact: %v", err)
+		}
+		return
+	}
+	if *redo != "" {
+		re, err := regexp.Compile(*redo)
+		if err != nil {
+			fatal("-redo: %v", err)
+		}
+		dim(fmt.Sprintf("[-redo: %d lines to build again]", c.markMatching(re)))
 	}
 	recovered, cut := a.recoverAgents()
 	logAll(c, recovered) // in the chat, for the next turn: none starts now
@@ -207,6 +241,15 @@ func main() {
 	}
 	if rl != nil {
 		a.onReload = func() { go reload() }
+	}
+	if *owed {
+		o, err := loadOwed(*dir)
+		if err != nil {
+			fatal("owed: %v", err)
+		}
+		a.mu.Lock()
+		a.owed = o
+		a.mu.Unlock()
 	}
 	if *wake { // after the hub: one missed while down starts a turn now
 		w, err := startWaker(*dir, func(text string) { h.input(message{kind: "work", text: text}) })
@@ -310,9 +353,9 @@ func main() {
 }
 
 // systemPrompt is the prompt for a chat whose instructions are in
-// agentsMD, with Opt's MCP servers' file when it has one, the wake tool
-// listed when on, and zoom on subagents as -agent-memory says.
-func systemPrompt(agentsMD, optMCP string, wake, agentMem bool) string {
+// agentsMD, with Opt's MCP servers' file when it has one, the wake and
+// owe tools listed when on, and zoom on subagents as -agent-memory says.
+func systemPrompt(agentsMD, optMCP string, wake, owed, agentMem bool) string {
 	s := strings.ReplaceAll(prompt, "{{AGENTS.md}}", agentsMD)
 	if !agentMem {
 		s = strings.Replace(s, zoomAgentLines, zoomAgentWhole, 1)
@@ -324,6 +367,9 @@ func systemPrompt(agentsMD, optMCP string, wake, agentMem bool) string {
 	}
 	if wake {
 		s = strings.Replace(s, "\n\n# Turns\n", "\n"+wakePrompt+"\n# Turns\n", 1)
+	}
+	if owed {
+		s = strings.Replace(s, "\n\n# Turns\n", "\n"+owedPrompt+"\n# Turns\n", 1)
 	}
 	return s
 }
@@ -681,7 +727,7 @@ func (h *harness) loop() {
 var (
 	commandWord = regexp.MustCompile(`(?s)^\s*/([A-Za-z][\w:.-]*)(?:\s+(.*?))?\s*$`) // "/word args", never a path like /Users/me/shot.png
 	modelName   = regexp.MustCompile(`^[\w.:\[\]-]+$`)
-	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "usage", "btw", "reload", "help"}
+	commands    = []string{"model", "effort", "mode", "autocompact", "mcp", "skills", "plugins", "agents", "status", "usage", "btw", "reload", "owed", "done", "help"}
 )
 
 // command runs a line that starts with /word, and says what it did; false
@@ -721,6 +767,9 @@ func command(a *Agent, line string) (string, bool, error) {
 	}
 	if word == "autocompact" {
 		return autocompact(a, arg)
+	}
+	if word == "owed" || word == "done" {
+		return owedCommand(a, word, arg), true, nil
 	}
 	if word == "reload" {
 		if a.onReload == nil {
@@ -769,6 +818,7 @@ func command(a *Agent, line string) (string, bool, error) {
 			"/skills [on|off name] your Claude Code skills: list them, or turn one on or off for Opt\n" +
 			"/plugins [on|off id] your Claude Code plugins (skills and MCP servers together), as name@marketplace\n" +
 			"/agents             list the subagents at work\n" +
+			"/owed, /done N      Opt's owed list: list it, or close item N (only you can)\n" +
 			"/status             Claude Code's version and account, this run's settings, the view and the plan's usage\n" +
 			"/usage [day|week|run] the plan's limits, what uses them, and what Opt's calls spent\n" +
 			"/btw question       a side question: answered beside the chat, which never sees it\n" +

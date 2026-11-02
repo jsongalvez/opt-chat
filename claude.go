@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,7 +37,10 @@ type Agent struct {
 	model, effort   string     // turns
 	amodel, aeffort string     // subagents
 	cmodel, ceffort string     // compactions
+	cnice           int        // compactions run under nice -n this (0: as turns)
 	cbare           bool       // memory summary calls on a different model from the turns get no tools
+	ccopied         bool       // ask again for a line with tokens from <chat> its input lacks (-compact-copied)
+	relay           *relay     // -experimental-relay: see relay.go; nil: off
 	perm, cwd       string
 	tools           string
 	claude          string            // the claude command: "" for the one on PATH
@@ -63,6 +67,7 @@ type Agent struct {
 	autoResume bool              // a start resumes the subagents a quit, crash or reload cut off: see resume.go
 	onReload   func()            // /reload's: see reload.go; nil: none
 	wakes      *waker            // the wake tool's (-wake); nil: off
+	owed       *owedList         // the owe tool's (-owed); nil: off
 	resumes    *resumer          // resumes at a usage limit's reset (-resume-at-reset); nil: off
 	resetGrace time.Duration     // after the reset, before they go out
 	noEmail    string            // the plugin that drops the account's email from calls' context, by folder; "": none. See email.go
@@ -502,9 +507,9 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	tools := a.tools
 	if bare {
 		// Its tools only let it read the turns' prefix from the cache, which
-		// is per model. Listed, they bring Claude Code's tool reminders, such
-		// as Bash's commit attribution naming this call's model, and a
-		// summary can take one for the chat's own words.
+		// is per model. Listed, they bring Claude Code's reminders: Bash's
+		// commit attribution names this call's model, and summaries wrote
+		// down the chat's commits as crediting the wrong one.
 		tools = ""
 	}
 	if own {
@@ -556,7 +561,11 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	case roleTurn, roleAgent: // the reply streams to the pages as it is written
 		args = append(args, "--include-partial-messages")
 	}
-	cmd := exec.CommandContext(ctx, a.claudeCmd(), args...)
+	name := a.claudeCmd()
+	if r == roleCompact && a.cnice > 0 { // background work: turns keep the CPU when the machine is busy
+		name, args = "nice", append([]string{"-n", strconv.Itoa(a.cnice), name}, args...)
+	}
+	cmd := exec.CommandContext(ctx, name, args...)
 	// Stopped gently, so Claude Code can stop what its tools started, and so
 	// are they: its group (below).
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
@@ -567,6 +576,9 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
+	if a.relay != nil {
+		cmd.Env = append(cmd.Env, "ANTHROPIC_BASE_URL="+a.relay.base)
+	}
 	if own {
 		// Tool search always: left to decide, Claude Code defers MCP tools or
 		// not by which servers have connected by each request, so the ack and
@@ -817,6 +829,15 @@ func viewMessages(lines []string, input []block) (first, second []block) {
 	return splitView(lines, len(lines), checkpoint, input)
 }
 
+// viewMessages is viewMessages, but with the relay the view goes whole in
+// one message: the relay marks it in blocks (relay.go).
+func (a *Agent) viewMessages(lines []string, input []block) (first, second []block) {
+	if a.relay != nil {
+		return splitView(lines, 0, checkpoint, input)
+	}
+	return viewMessages(lines, input)
+}
+
 // splitView is viewMessages with the first message ending at a multiple of
 // every lines, within the first stable lines, and before the first line
 // not summarized yet: once built, it would read otherwise, and the first
@@ -853,6 +874,9 @@ func viewCut(lines []string, stable, every int) int {
 // changes with nearly every line built, most first messages were written
 // for one or two calls. TestCacheReplay measures it.
 func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, stable int, task []block) (first, rest []block) {
+	if a.relay != nil { // whole: the relay marks it in blocks, and lets one call at a time write it
+		return splitView(lines, 0, ccheckpoint, task)
+	}
 	first, rest = splitView(lines, stable, ccheckpoint, task)
 	if first == nil || len(rest) > 16 { // the blocks after it, past the API's lookback
 		return first, rest
@@ -935,7 +959,7 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 		return "", err
 	}
 	p.send(rest...)
-	best, acks := "", 0
+	best, acks, listed, copied := "", 0, false, false
 	for try := 1; ; {
 		e, ok := p.next()
 		if !ok && best != "" {
@@ -969,6 +993,23 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 				"<input>: write its one line now, as the task above says."))
 			continue
 		}
+		// A list of owed items <input> lacks came from <chat>: memory keeps
+		// no such list, and a line copies it forward as if its input said it.
+		if !listed && owedHead.MatchString(line) && !owedHead.MatchString(blocksText(task)) {
+			listed = true
+			p.send(textBlock("Your line lists owed or open items that <input> doesn't hold: they came\n" +
+				"from <chat>. Write the whole line again for the same <input>, without them."))
+			continue
+		}
+		if a.ccopied && !copied {
+			if toks := fromContext(line, blocksText(task), lines); len(toks) > 0 {
+				copied = true
+				p.send(textBlock("Your line holds " + strings.Join(toks, ", ") + ": <chat> has them, <input> doesn't.\n" +
+					"Write the whole line again for the same <input>. Keep one only where it names what\n" +
+					"<input> itself refers to; drop the facts about it that <input> doesn't state."))
+				continue
+			}
+		}
 		if best == "" || len(line) < len(best) {
 			best = line
 		}
@@ -981,6 +1022,34 @@ func (a *Agent) Compact(ctx context.Context, lines []string, stable int, task []
 			"the whole line again for the same <input>, cutting just enough of the\n"+
 			"least valuable items to fit before this cut:\n%s| ← LIMIT", len(line), head(line, nodeMax))))
 	}
+}
+
+// token is what a line copies from its context exactly: a commit, a number,
+// a file name.
+var token = regexp.MustCompile(`\b[0-9a-f]{7,40}\b|\b\d{3,}\b|[\w-]+\.(?:go|kt|ts|js|py|md|java|svelte|yml|yaml|json|sh|sql)(?::\d+)?`)
+
+// fromContext is the tokens of line that ctx holds and input doesn't.
+func fromContext(line, input string, ctx []string) []string {
+	all := strings.Join(ctx, "\n")
+	var out []string
+	for _, t := range token.FindAllString(line, -1) {
+		if !strings.Contains(input, t) && strings.Contains(all, t) && !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// owedHead is the head of a list of owed or open items, which summaries
+// copied from line to line (see docs/2026-10-23-faithful-lines.md).
+var owedHead = regexp.MustCompile(`(?i)\b(owed|open|open items?|pending|to-?do)\s*:`)
+
+func blocksText(bs []block) string {
+	var b strings.Builder
+	for _, x := range bs {
+		b.WriteString(x.Text)
+	}
+	return b.String()
 }
 
 // echoedHead is a line's id+n| head, which a compaction sees on the lines it
@@ -1206,7 +1275,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	h.setTurn(func(lt *liveTurn) {
 		lt.Phase, lt.Partial, lt.From, lt.Backlog, lt.Written, lt.Tool, lt.Context = "reading", partial, from, 0, 0, "", 0
 	})
-	input := a.atWork()
+	input := append(a.atWork(), a.owedNote()...)
 	// Recall reads the log while the call starts. It looks before the
 	// messages of this turn: one logged already (by a call that died) would
 	// find itself.
@@ -1348,7 +1417,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	if r := <-recalled; r != "" {
 		input = slices.Insert(input, recallAt, textBlock(r))
 	}
-	first, second := viewMessages(lines, input)
+	first, second := a.viewMessages(lines, input)
 	if err := a.ack(p, first, &vu, handle); err != nil {
 		p.wait()
 		return err

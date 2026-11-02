@@ -1172,3 +1172,48 @@ func TestZoomRun(t *testing.T) {
 		t.Fatalf("count with n 2: %q", got)
 	}
 }
+
+// -redo marks a message's line that holds what its message lacks, and the
+// lines built on it, and keeps the marks in the tree's log: a line whose
+// message says it too stays.
+func TestMarkMatching(t *testing.T) {
+	dir := t.TempDir()
+	c, err := openChat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 4 {
+		c.Log("tool", fmt.Sprint("commit ", i, map[bool]string{true: " (should be Brand X)"}[i == 3], strings.Repeat(" x", 400))) // over 512: a model's line
+	}
+	c.mu.Lock()
+	for l := range 3 {
+		for i := range 4 >> l {
+			c.setNode(key{l, i}, "line "+key{l, i}.name())
+		}
+	}
+	c.setNode(key{0, 1}, "commit 1, should be Brand X")
+	c.setNode(key{0, 3}, "commit 3, should be Brand X")
+	c.setNode(key{1, 0}, "commits 0-1, should be Brand X") // copied it: marked
+	// 2+0 stays "line 2+0": built on a bad line, but holds nothing bad
+	c.redo[key{2, 0}] = true // a mark from an earlier run, dropped
+	c.flushNodes()
+	c.mu.Unlock()
+	if n := c.markMatching(regexp.MustCompile(`Brand X`)); n != 2 {
+		t.Fatalf("marked %d, want 2: 0+1, 1+0", n)
+	}
+	c.mu.Lock()
+	queued := c.queued[key{0, 1}]
+	c.mu.Unlock()
+	if !queued {
+		t.Fatal("0+1 not queued: it would wait for the next start")
+	}
+	c.lock.Close() // as at a restart
+	again, err := openChat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := slices.SortedFunc(maps.Keys(again.redo), func(a, b key) int { return cmp.Compare(a.L*100+a.I, b.L*100+b.I) })
+	if want := []key{{0, 1}, {1, 0}}; !slices.Equal(got, want) {
+		t.Fatalf("after a restart, to redo: %v, want %v", got, want)
+	}
+}

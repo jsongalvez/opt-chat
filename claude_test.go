@@ -246,6 +246,14 @@ func fakeClaude() {
 			result("Ok.")
 		case strings.Contains(in, "was the reply to the view's first message only"):
 			result("the line at last")
+		case strings.Contains(in, "lists owed or open items that <input> doesn't hold"):
+			result("tool: ran it")
+		case strings.Contains(in, "<chat> has them, <input> doesn't"):
+			result("tool: pushed")
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "copies-commit"):
+			result("tool: pushed; CI for deadbeef1 red")
+		case strings.Contains(in, "Compaction:") && strings.Contains(in, "adds-owed"):
+			result("tool: ran it. Owed: a thing from the chat")
 		case strings.Contains(in, "Compaction:") && strings.Contains(in, "answers-ok"):
 			ackAlways = strings.Contains(in, "always")
 			result("ok")
@@ -571,8 +579,35 @@ func TestCompact(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an ok twice became the line %q", got)
 	}
-	// A summary call on a different model from the turns, with -compact-bare,
-	// gets no tools: Claude Code's reminders for them reached the summaries.
+	// A list of owed items its input lacks came from the chat: asked again
+	// without it. One its input holds stays.
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: adds-owed")})
+	if err != nil || got != "tool: ran it" {
+		t.Fatalf("an owed list from the chat was kept: %q, %v", got, err)
+	}
+	got, err = a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: adds-owed, as Owed: says")})
+	if err != nil || got != "tool: ran it. Owed: a thing from the chat" {
+		t.Fatalf("an owed list in the input was dropped: %q, %v", got, err)
+	}
+	// A commit its context names and its input lacks: asked again, with
+	// -compact-copied; kept without it, and when its input names it.
+	ctxc := []string{"1+1|tool: CI for deadbeef1 red"}
+	a.ccopied = true
+	got, err = a.Compact(context.Background(), ctxc, 1, []block{textBlock("Compaction: copies-commit")})
+	if err != nil || got != "tool: pushed" {
+		t.Fatalf("a commit from the context was kept: %q, %v", got, err)
+	}
+	got, err = a.Compact(context.Background(), ctxc, 1, []block{textBlock("Compaction: copies-commit deadbeef1")})
+	if err != nil || got != "tool: pushed; CI for deadbeef1 red" {
+		t.Fatalf("a commit in the input was dropped: %q, %v", got, err)
+	}
+	a.ccopied = false
+	got, err = a.Compact(context.Background(), ctxc, 1, []block{textBlock("Compaction: copies-commit")})
+	if err != nil || got != "tool: pushed; CI for deadbeef1 red" {
+		t.Fatalf("-compact-copied=false asked again: %q, %v", got, err)
+	}
+	// On another model than turns, with -compact-bare, it lists no tools:
+	// Claude Code's reminders for them named its model in commits.
 	a.cbare = true
 	if _, err := a.Compact(context.Background(), nil, 0, []block{textBlock("Compaction: x")}); err != nil {
 		t.Fatal(err)
@@ -582,7 +617,7 @@ func TestCompact(t *testing.T) {
 		t.Fatalf("bare compaction args: %q", args)
 	}
 	a.cbare = false
-	if n, u := a.takeCompactions(); n != 7 || u.Read == 0 {
+	if n, u := a.takeCompactions(); n != 12 || u.Read == 0 {
 		t.Fatalf("compactions counted: %d, %v", n, u)
 	}
 }

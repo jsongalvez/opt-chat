@@ -1,0 +1,33 @@
+name: ci
+on:
+  push:
+    branches: [master]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -short ./...
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: |
+          v=8.21.2
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${v}/gitleaks_${v}_linux_x64.tar.gz" -o "$RUNNER_TEMP/gl.tgz"
+          mkdir "$RUNNER_TEMP/gl" && tar -xzf "$RUNNER_TEMP/gl.tgz" -C "$RUNNER_TEMP/gl"
+          "$RUNNER_TEMP/gl/gitleaks" git .

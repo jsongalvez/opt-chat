@@ -127,7 +127,7 @@ func (a *Agent) btw(lines []string, earlier []Aside, m message, before int) (r a
 	defer p.wait()
 	a.mcpSettle(p)
 	var u usage
-	first, second := viewMessages(lines, input)
+	first, second := a.viewMessages(lines, input)
 	if err := a.ack(p, first, &u, nil); err != nil {
 		return r, err
 	}

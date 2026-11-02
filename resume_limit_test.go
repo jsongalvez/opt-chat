@@ -273,7 +273,7 @@ func TestResumer(t *testing.T) {
 
 // A rate_limit_event that refuses one model's weekly window speaks for that
 // model's calls only: a subagent on another model that fails for another
-// reason is not waiting on it. Found by a TLA+ model of the resume (property NoWaitOnNonLimit).
+// reason is not waiting on it. Found by formal/limitresume (NoWaitOnNonLimit).
 func TestModelLimitEventIsNotEveryones(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
