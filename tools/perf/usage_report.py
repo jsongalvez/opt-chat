@@ -77,6 +77,30 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else 0
 
 
+def causes(rs, rates):
+    """Why big cache writes happened, from records that log prefix, first and gapS."""
+    seen, by = set(), Counter()
+    cost = Counter()
+    logged = [r for r in rs if r.get("prefix")]
+    for r in logged:
+        if tok(r, K[1]) > BIG_WRITE:
+            if r["prefix"] not in seen:
+                k = "new system prompt, tools, model or effort"
+            elif not r.get("gapS"):
+                k = "new first message (view changed)"
+            elif r["gapS"] > 3600:
+                k = "same pair, over 1h since last result (expired)"
+            else:
+                k = "same pair within 1h (unexplained)"
+            by[k] += 1
+            cost[k] += sum(s.get(K[1], 0) * rates.get(m, [0] * 4)[1] / 1e6 for m, s in r["models"].items())
+        seen.add(r["prefix"])
+    if logged:
+        print(f"   miss causes ({len(logged)} records log them):")
+        for k, n in by.most_common():
+            print(f"      {k}: {n}, write ${cost[k]:.2f}")
+
+
 def main():
     args = sys.argv[1:]
     since = None
@@ -125,6 +149,8 @@ def main():
                 prev = t
             for k, (n, d) in by.items():
                 print(f"   records writing >{BIG_WRITE // 1000}k to the cache {k}: {n}, write ${d:.2f}")
+        if role in ("turn", "agent"):
+            causes(rs, rates)
 
 
 if __name__ == "__main__":

@@ -68,3 +68,45 @@ func TestUsage(t *testing.T) {
 		t.Fatal(out)
 	}
 }
+
+// Each record names what the cache reuse hangs on (prefix, first message)
+// and how long since the same pair last had a result, so a report can tell
+// an expired entry from a changed prompt or view.
+func TestUsageMissCause(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	result := func(cost float64) event {
+		return event{Turns: 1, Cost: cost, Models: map[string]modelSpend{"claude-big": {Write: int(cost * 1000), Cost: cost}}}
+	}
+	call := func(first string) *proc {
+		p := &proc{prefix: "big medium " + t.Name(), stdin: nopWriter{}}
+		p.send(block{Type: "text", Text: first})
+		return p
+	}
+	p := call("view A")
+	a.noteSpend(p, roleTurn, result(0.1))
+	a.noteSpend(call("view A"), roleTurn, result(0.2)) // same pair, a new call
+	a.noteSpend(call("view B"), roleTurn, result(0.3)) // view changed
+	all, err := readSpend(c.dir, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("%d records", len(all))
+	}
+	if all[0].Prefix == "" || all[0].First == "" || all[0].GapS != 0 {
+		t.Fatalf("first call: %+v", all[0])
+	}
+	if all[1].Prefix != all[0].Prefix || all[1].First != all[0].First || all[1].GapS < 1 {
+		t.Fatalf("same pair again: %+v", all[1])
+	}
+	if all[2].First == all[0].First || all[2].GapS != 0 {
+		t.Fatalf("changed view: %+v", all[2])
+	}
+}
+
+type nopWriter struct{}
+
+func (nopWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (nopWriter) Close() error                { return nil }
