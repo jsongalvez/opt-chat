@@ -5,8 +5,6 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -80,7 +78,7 @@ func TestMCP(t *testing.T) {
 			t.Fatal("tools/list differs between calls")
 		}
 	}
-	if _, out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); len(out["result"].(map[string]any)["tools"].([]any)) != 6 {
+	if _, out := call(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`); len(out["result"].(map[string]any)["tools"].([]any)) != 5 {
 		t.Fatalf("tools/list: %v", out)
 	}
 	for args, want := range map[string]string{
@@ -120,31 +118,6 @@ func TestMCP(t *testing.T) {
 		t.Fatalf("a subagent's zoom: %v", out)
 	}
 
-	// Importing an OpenCode transcript appends its words; a subagent can't.
-	importFile := filepath.Join(t.TempDir(), "opencode.jsonl")
-	jsonl(t, importFile,
-		obj{"type": "opencode_session", "timestamp": "2026-09-01T10:00:00Z", "session": "oc1", "cwd": "/work"},
-		claudeLine("user", "2026-09-01T10:00:01Z", "from OpenCode"),
-		claudeLine("assistant", "2026-09-01T10:00:02Z", "noted."),
-	)
-	importCall := `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"import","arguments":{"path":` + strconv.Quote(importFile) + `}}}`
-	if _, out := call(importCall); !strings.HasSuffix(text(out), "\nImported.") {
-		t.Fatalf("import: %v", out)
-	}
-	all := logged(c)
-	if got := all[len(all)-3:]; !slices.Equal(got, []string{
-		"note: OpenCode session oc1 in /work, from 2026-09-01 10:00:00 UTC (imported)",
-		"user: from OpenCode",
-		"ai: noted.",
-	}) {
-		t.Fatalf("imported messages: %q", got)
-	}
-	if _, out := post(agentURL, importCall); text(out) != "Only Opt imports chats." {
-		t.Fatalf("a subagent's import: %v", out)
-	}
-	if _, out := call(`{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"import","arguments":{}}}`); text(out) != "path is required." {
-		t.Fatalf("import without a path: %v", out)
-	}
 	if _, out := call(`{"jsonrpc":"2.0","id":5,"method":"resources/list"}`); out["error"] == nil {
 		t.Fatalf("unknown method: %v", out)
 	}

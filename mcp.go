@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-// serveMCP serves zoom, date, search, import, spawn, tell and wake to Claude Code over MCP (streamable HTTP,
+// serveMCP serves zoom, date, search, spawn, tell and wake to Claude Code over MCP (streamable HTTP,
 // plain JSON replies) on a local port, behind a random secret in the path.
 // It returns the --mcp-config that points at it, and one for subagents.
 func serveMCP(a *Agent) (string, string, error) {
@@ -76,9 +76,6 @@ var (
 			"each with a snippet, its date, and the view's line that holds it, to zoom into; when none does, the 10 that best share its words. "+searchAgentTool+
 			"before: go on from this message id.",
 			schema([]string{"text"}, map[string]any{"text": str, "before": num})),
-		tool("import", "Import new messages from a chat transcript into memory: an OpenCode .jsonl exported by tools/opencode-to-optchat, "+
-			"a Claude Code or Codex session, or a Claude or ChatGPT export. Appends to the log; it can't be undone. Returns what it added.",
-			schema([]string{"path"}, map[string]any{"path": str})),
 		tool("spawn", `Start a subagent on a task, in the background, and return at once. Its report comes back as a message starting "[Name]". Never wait for it. `+
 			"A subagent sees the view and the user's instructions, but knows what you want only from its task. "+
 			"effort: how long it thinks first; more is smarter and slower. Leave it out for the default. "+
@@ -240,7 +237,6 @@ type toolArgs struct {
 	Cancel  int            `json:"cancel"`
 	Every   string         `json:"every"`
 	Count   int            `json:"count"`
-	Path    string         `json:"path"`
 	From    int            `json:"from"`
 	Item    int            `json:"item"`
 	State   string         `json:"state"`
@@ -286,17 +282,6 @@ func callTool(a *Agent, fromAgent bool, tool string, x toolArgs) (string, []stri
 			s += a.searchAgents(x.Text)
 		}
 		return s, nil
-	case tool == "import" && fromAgent:
-		return "Only Opt imports chats.", nil
-	case tool == "import":
-		if strings.TrimSpace(x.Path) == "" {
-			return "path is required.", nil
-		}
-		out, err := importNow(a.chat, x.Path, importOpts{})
-		if err != nil {
-			return "import: " + err.Error(), nil
-		}
-		return out, nil
 	case (tool == "spawn" || tool == "tell") && fromAgent:
 		return "Only Opt starts and tells subagents.", nil
 	case tool == "spawn":

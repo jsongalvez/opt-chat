@@ -53,8 +53,8 @@ cache over.
   goes on by itself at the next start; one you stopped, when Opt tells it.
 - `/reload` (or `kill -USR1`) rebuilds opt-chat from its source and, once
   the chat is idle, restarts it in place: same terminal, port and page.
-- `-import` brings in past chats from Claude Code, Codex, OpenCode, or a
-  Claude or ChatGPT export.
+- `-import` brings in past chats from Claude Code, Codex, or a Claude or
+  ChatGPT export.
 - The bar shows how big the memory is, the last turn's tokens and your
   plan's usage limits.
 - The page listens on 127.0.0.1 only, behind a secret key.
@@ -81,7 +81,6 @@ cache over.
 | `-resume-at-reset` | on | at the plan's usage-limit reset, start a turn and resume the subagents it stopped (`-reset-grace`, 90s); plan limits only, not spend, credit or 429 errors |
 | `-auto-resume` | on | resume a cut-off turn and subagents at start |
 | `-import` | | import past chats first; see `-import-since`, `-import-tools`, `-import-skip` in the guide |
-| `-import-only` | off | with `-import`: write what it imports and exit |
 | `-addr` | last run's port | `127.0.0.1:port` |
 | `-open`, `-sounds` | on | open the page in the browser; play what happens from [peon-ping](https://github.com/PeonPing/peon-ping)'s sound pack |
 | `-recall` | `8` | raw messages sharing your message's rare words, given to each turn |

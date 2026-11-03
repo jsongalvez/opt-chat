@@ -55,7 +55,6 @@ func main() {
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
 	importPath := flag.String("import", "", "import past chats, then chat: a ~/.claude or ~/.codex directory, a session's .jsonl, a Claude or ChatGPT export (.zip), or a text file whose lines become notes")
-	importOnly := flag.Bool("import-only", false, "with -import: write what it imports and exit, without starting the chat")
 	importSince := flag.String("import-since", "", "import only messages from this day on (YYYY-MM-DD)")
 	importTools := flag.Bool("import-tools", false, "import tool calls and results too")
 	importSkip := flag.String("import-skip", "", "skip sessions whose directory (or a chat's title) contains any of these, comma-separated")
@@ -69,7 +68,6 @@ func main() {
 	evalPar := flag.Int("eval-par", 4, "questions -eval asks at once")
 	redo := flag.String("redo", "", "at start, build again each message's line that matches this regular expression while its message doesn't, and the lines built on them: a claim its compaction added")
 	evalCompact := flag.String("eval-compact", "", "build again the tree lines this file names (JSON lines with \"l\", \"i\", \"runs\"), as compactions would now, write them to -eval-out without keeping them, and quit")
-	expRelay := flag.Bool("experimental-relay", false, "experimental: route calls through a loopback relay that marks the view's first part for the cache itself, saving the extra \"ok\" request each call spends on it (see relay.go)")
 	flag.Parse()
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGUSR1) // at once: unhandled, it would end opt-chat; a reload waits for the start's end
@@ -101,9 +99,6 @@ func main() {
 	}
 	if *jobs < 1 || *agentJobs < 1 {
 		fatal("-jobs and -agent-jobs must be 1 or more")
-	}
-	if *importOnly && *importPath == "" {
-		fatal("-import-only needs -import")
 	}
 	if *agentCap != 0 && (*agentCap < windowMin || *agentCap > windowMax) {
 		fatal("-agent-compact-max must be 0, or from %d to %d", windowMin, windowMax)
@@ -138,9 +133,6 @@ func main() {
 		case err != nil:
 			fatal("import: %v", err)
 		}
-		if *importOnly {
-			return
-		}
 	}
 	agentsMD := filepath.Join(*dir, "AGENTS.md")
 	hb := newHub()
@@ -159,12 +151,6 @@ func main() {
 	a.life, a.stop = context.WithCancel(context.Background())
 	if *agentMem {
 		a.mems = newAgentMems(c, *agentJobs)
-	}
-	if *expRelay {
-		// OPT_CHAT_RELAY_TRACE: a file for each request's shape, never its text.
-		if a.relay, err = startRelay("https://api.anthropic.com", os.Getenv("OPT_CHAT_RELAY_TRACE")); err != nil {
-			warn("-experimental-relay is off: %v", err)
-		}
 	}
 	h.agent = a
 	if *hideEmail {

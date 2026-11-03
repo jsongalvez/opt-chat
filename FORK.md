@@ -12,8 +12,6 @@ we drop, leaves it in the same commit.
 | Summaries say only what their input says; re-ask a compaction that copies from context | `-compact-copied`, prompt.md | yes | no PR | small |
 | Rebuild only bad summary lines | `-redo`, `-eval-compact` | one-off (memrot) | no PR | small |
 | Compactions under nice | `-compact-nice` | yes | no PR | tiny |
-| Experimental relay: cache marks in transit | `-experimental-relay`; relay.go | **off since Nov 3** | no | 736 lines |
-| OpenCode / MCP chat import | `-import-only`; import.go, tools/opencode-to-optchat | **unused since DeepSeek was dropped** | no | ~340 lines |
 | MCP tools/list with sorted keys | mcp.go | yes (cache-stable tools) | no PR | tiny |
 | Log a Cmd+Enter message to a subagent before the interrupt | subs.go | yes | no PR | tiny |
 | Fork CI and upstream-branch CI | .github/workflows/ci.yml, tools/ci-upstream-branch.sh, tools/fork-rebuild-check.sh | yes | fork only | small |

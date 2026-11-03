@@ -101,7 +101,7 @@ func TestWakeTool(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
-	if n := len(a.mcpList()); n != 6 {
+	if n := len(a.mcpList()); n != 5 {
 		t.Fatalf("tools when off: %d", n)
 	}
 	if got, _ := callTool(a, false, "wake", toolArgs{At: "1h", Message: "m"}); got != "Wake-ups are off: opt-chat runs with -wake=false." {
@@ -113,7 +113,7 @@ func TestWakeTool(t *testing.T) {
 	}
 	defer w.stop()
 	a.wakes = w
-	if n := len(a.mcpList()); n != 7 {
+	if n := len(a.mcpList()); n != 6 {
 		t.Fatalf("tools when on: %d", n)
 	}
 	call := func(fromAgent bool, x toolArgs) string { s, _ := callTool(a, fromAgent, "wake", x); return s }

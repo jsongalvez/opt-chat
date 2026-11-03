@@ -40,7 +40,6 @@ type Agent struct {
 	cnice           int        // compactions run under nice -n this (0: as turns)
 	cbare           bool       // memory summary calls on a different model from the turns get no tools
 	ccopied         bool       // ask again for a line with tokens from <chat> its input lacks (-compact-copied)
-	relay           *relay     // -experimental-relay: see relay.go; nil: off
 	perm, cwd       string
 	tools           string
 	claude          string            // the claude command: "" for the one on PATH
@@ -576,9 +575,6 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 	cmd.WaitDelay = 5 * time.Second
 	cmd.Dir = a.cwd
 	cmd.Env = childEnv()
-	if a.relay != nil {
-		cmd.Env = append(cmd.Env, "ANTHROPIC_BASE_URL="+a.relay.base)
-	}
 	if own {
 		// Tool search always: left to decide, Claude Code defers MCP tools or
 		// not by which servers have connected by each request, so the ack and
@@ -829,15 +825,6 @@ func viewMessages(lines []string, input []block) (first, second []block) {
 	return splitView(lines, len(lines), checkpoint, input)
 }
 
-// viewMessages is viewMessages, but with the relay the view goes whole in
-// one message: the relay marks it in blocks (relay.go).
-func (a *Agent) viewMessages(lines []string, input []block) (first, second []block) {
-	if a.relay != nil {
-		return splitView(lines, 0, checkpoint, input)
-	}
-	return viewMessages(lines, input)
-}
-
 // splitView is viewMessages with the first message ending at a multiple of
 // every lines, within the first stable lines, and before the first line
 // not summarized yet: once built, it would read otherwise, and the first
@@ -874,9 +861,6 @@ func viewCut(lines []string, stable, every int) int {
 // changes with nearly every line built, most first messages were written
 // for one or two calls. TestCacheReplay measures it.
 func (a *Agent) compactView(ctx context.Context, prefix string, lines []string, stable int, task []block) (first, rest []block) {
-	if a.relay != nil { // whole: the relay marks it in blocks, and lets one call at a time write it
-		return splitView(lines, 0, ccheckpoint, task)
-	}
 	first, rest = splitView(lines, stable, ccheckpoint, task)
 	if first == nil || len(rest) > 16 { // the blocks after it, past the API's lookback
 		return first, rest
@@ -1417,7 +1401,7 @@ func (t *Turn) Run(ctx context.Context, msgs []message) error {
 	if r := <-recalled; r != "" {
 		input = slices.Insert(input, recallAt, textBlock(r))
 	}
-	first, second := a.viewMessages(lines, input)
+	first, second := viewMessages(lines, input)
 	if err := a.ack(p, first, &vu, handle); err != nil {
 		p.wait()
 		return err
