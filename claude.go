@@ -137,8 +137,9 @@ func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 }
 
 // cachedFor is how long a first message is taken to stay cached after it
-// was last written or read: Claude Code's cache entries live 5 minutes.
-const cachedFor = 4 * time.Minute
+// was last written or read, a margin under the cache's life (-cache-ttl):
+// Claude Code on a plan writes 1-hour entries, on an API key 5-minute ones.
+var cachedFor = 55 * time.Minute
 
 // inCache reports whether the cache holds a compaction's first message,
 // waiting for a call that is writing it to begin its response, or to fail
@@ -297,6 +298,7 @@ func (e event) blocks() []block {
 // proc is one `claude -p` process speaking stream-json both ways.
 type proc struct {
 	prefix string          // what its cache prefix depends on besides the messages
+	first  string          // a hash of the first text it was sent, for the usage log
 	ctx    context.Context // done once the call is stopped
 	cmd    *exec.Cmd
 	mu     sync.Mutex
@@ -748,6 +750,9 @@ func (p *proc) send(content ...block) bool {
 		return false
 	}
 	content = slices.DeleteFunc(slices.Clone(content), func(b block) bool { return b.Type == "text" && b.Text == "" })
+	if p.first == "" && len(content) > 0 && content[0].Type == "text" {
+		p.first = shortHash(content[0].Text)
+	}
 	b, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": content}})
 	_, err := p.stdin.Write(append(b, '\n'))
 	return err == nil

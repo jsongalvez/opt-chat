@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
 	"maps"
@@ -11,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -53,6 +56,22 @@ type spend struct {
 	APIms    int64                 `json:"apiMs"`
 	Cost     float64               `json:"cost"`
 	Models   map[string]modelSpend `json:"models"`
+	// What the cache reuse depends on, so a report can tell why a call
+	// wrote the cache again: Prefix is the model, effort, system prompt and
+	// tools; First the call's first message; GapS the seconds since the
+	// last result of a call with both the same, in this run (absent: none).
+	Prefix string `json:"prefix,omitzero"`
+	First  string `json:"first,omitzero"`
+	GapS   int64  `json:"gapS,omitzero"`
+}
+
+// lastResult is when a call with a prefix and first message last had a
+// result, for spend.GapS.
+var lastResult sync.Map // string -> time.Time
+
+func shortHash(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:6])
 }
 
 var roleNames = map[role]string{roleTurn: "turn", roleAgent: "agent", roleCompact: "compaction", roleBtw: "btw"}
@@ -74,6 +93,10 @@ func (a *Agent) noteSpend(p *proc, r role, e event) {
 		}
 	}
 	p.spent = spent{Cost: e.Cost, APIms: e.APIms, Models: e.Models}
+	s.Prefix, s.First = shortHash(p.prefix), p.first
+	if was, ok := lastResult.Swap(s.Prefix+" "+s.First, s.Date); ok {
+		s.GapS = max(int64(s.Date.Sub(was.(time.Time))/time.Second), 1)
+	}
 	if len(s.Models) == 0 {
 		return
 	}
