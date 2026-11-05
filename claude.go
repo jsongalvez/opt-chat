@@ -352,16 +352,39 @@ func (a *Agent) ownSettings(window int, deny []string) string {
 	for _, name := range deny {
 		denied = append(denied, server{name})
 	}
+	hooks := a.ownHooks()
 	b, _ := json.Marshal(struct {
 		DisableAllHooks    bool              `json:"disableAllHooks"`
+		Hooks              jsontext.Value    `json:"hooks,omitzero"`
 		AutoCompactEnabled bool              `json:"autoCompactEnabled"`
 		AutoCompactWindow  int               `json:"autoCompactWindow,omitzero"`
 		ClaudeMdExcludes   []string          `json:"claudeMdExcludes,omitzero"`
 		SkillOverrides     map[string]string `json:"skillOverrides,omitzero"`
 		EnabledPlugins     map[string]bool   `json:"enabledPlugins,omitzero"`
 		DeniedMcpServers   []server          `json:"deniedMcpServers,omitzero"`
-	}{true, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet, denied}, json.Deterministic(true))
+	}{hooks == nil, hooks, window > 0, ccWindow(window), excludes, a.skillsSet, a.pluginsSet, denied}, json.Deterministic(true))
 	return string(b)
+}
+
+// ownHooks are opt-chat's own hooks, from hooks.json in its folder, in
+// Claude Code's settings form ({"PostToolUse": [...], ...}); nil when there
+// are none. With them the call can't take disableAllHooks, so the user's
+// own hooks (~/.claude/settings.json, a repo's .claude/settings.json) run in
+// it too. The file is read at each call, so an edit holds from the next.
+func (a *Agent) ownHooks() jsontext.Value {
+	if a.chat == nil {
+		return nil
+	}
+	b, err := os.ReadFile(filepath.Join(a.chat.dir, "hooks.json"))
+	if err != nil {
+		return nil
+	}
+	var m map[string]jsontext.Value
+	if json.Unmarshal(b, &m) != nil || len(m) == 0 {
+		return nil
+	}
+	out, _ := json.Marshal(m)
+	return out
 }
 
 // compactSettings are the settings of a call without the user's setup:
