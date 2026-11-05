@@ -70,6 +70,12 @@ func joinEfforts() string { return strings.Join(efforts, ", ") }
 // Spawn starts an agent and returns at once. An empty effort is
 // -agent-effort; an empty model, -agent-model.
 func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHook, mcp ...string) string {
+	return a.spawn("", false, name, task, effort, model, window, loop, mcp...)
+}
+
+// spawn is Spawn by parent, "" for Opt: see spawns.go. With spawns, it may
+// start subagents of its own.
+func (a *Agent) spawn(parent string, spawns bool, name, task, effort, model string, window int, loop *loopHook, mcp ...string) string {
 	if strings.TrimSpace(task) == "" {
 		return "No task given."
 	}
@@ -106,22 +112,121 @@ func (a *Agent) Spawn(name, task, effort, model string, window int, loop *loopHo
 		return "opt-chat is quitting."
 	}
 	a.mu.Lock()
-	name = a.freeName(name)
+	name = a.freeNameLocked(name)
 	a.running[name] = nil // reserved until its call starts
 	a.subLocked(name, func(s *sub) {
-		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant}
+		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant, Parent: parent}
 	})
 	h := a.haltLocked(name)
 	a.mu.Unlock()
 	go func() {
 		defer a.calls.Done() // after its report is in the chat
-		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop, MCP: grant}, nil)
+		a.runAgent(name, h, agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Task: task, Loop: loop, MCP: grant, Spawns: spawns, Parent: parent}, nil)
 	}()
 	with := ""
 	if len(grant) > 0 {
 		with = ", with " + strings.Join(grant, ", ")
 	}
+	if parent != "" { // so Opt knows who it is
+		a.chat.Log("work", fmt.Sprintf("[opt-chat] [%s] started subagent [%s] of its own, on %s%s: its reports go to [%s], not to you. Its task: %s\n\nIts chat: zoom(%q)",
+			parent, name, strings.TrimSpace(model+" "+effort), with, parent, head(task, 300), name))
+	}
 	return fmt.Sprintf("Started [%s] in the background, on %s%s. Its report will come as a message starting \"[%s]\".", name, model, with, name)
+}
+
+// freeNameLocked is name, or name-2, -3 and so on, the first no subagent
+// has had. a.mu held.
+func (a *Agent) freeNameLocked(name string) string {
+	base := name
+	for n := 2; ; n++ { // names are forever: zoom("Name") opens its log
+		if _, taken := a.running[name]; !taken {
+			_, lerr := os.Stat(a.agentLog(name))
+			_, merr := os.Stat(strings.TrimSuffix(a.agentLog(name), ".log") + ".mem") // its log gone by hand: the chat would take its steps for the old ones
+			if os.IsNotExist(lerr) && os.IsNotExist(merr) {
+				return name
+			}
+		}
+		name = fmt.Sprintf("%s-%d", base, n)
+	}
+}
+
+// NewAgent makes a subagent of the user's own, as the page's menu asks:
+// blank, with no view of the chat and no task, its tools run in dir, and
+// its window as chosen, the -agent-compact-max cap left out (0: it never
+// compacts). Its call starts with the first message the user or Opt sends
+// it (see resume). Its name, unless given, is the folder's. It gives the
+// name, or, false, why it made none.
+func (a *Agent) NewAgent(name, dir, model, effort string, window int) (string, bool) {
+	model, effort = cmp.Or(model, a.amodel), cmp.Or(effort, a.aeffort)
+	switch {
+	case effort != "" && !validEffort(effort):
+		return "effort must be one of " + joinEfforts() + ".", false
+	case !modelName.MatchString(model):
+		return "model is one word: opus, fable, sonnet, haiku, or a full model name.", false
+	case window != 0 && (window < windowMin || window > windowMax):
+		return fmt.Sprintf("autocompact must be from %dk to %dk tokens, or off.", windowMin/1000, windowMax/1000), false
+	}
+	dir, err := userDir(dir)
+	if err != nil {
+		return err.Error(), false
+	}
+	name = cmp.Or(agentName(name), agentName(filepath.Base(dir)), "agent")
+	if err := os.MkdirAll(filepath.Join(a.chat.dir, "agents"), 0o700); err != nil {
+		return err.Error(), false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	name = a.freeNameLocked(name)
+	rec := agentRecord{Session: newSession(), Model: model, Effort: effort, Window: window, Dir: dir, Blank: true, State: "new"}
+	a.note(name, func(r *agentRecord) { *r = rec })
+	a.agentWrite(name, "on", rec.on()) // its log, there now, keeps the name
+	a.subLocked(name, func(s *sub) {
+		*s = rec.sub(name)
+		s.Started = nowMs()
+	})
+	return name, true
+}
+
+// on is what a subagent runs on, as its log and the chat say it: its model
+// and effort, and for the user's own, its folder and window.
+func (r agentRecord) on() string {
+	on := strings.TrimSpace(r.Model + " " + r.Effort)
+	if !r.Blank {
+		return on
+	}
+	w := "autocompact off"
+	if r.Window > 0 {
+		w = "autocompact past " + k(r.Window) + " tokens"
+	}
+	return fmt.Sprintf("%s, in %s, %s", on, r.Dir, w)
+}
+
+// userDir is the folder the user named, whole, ~ for their home: one that
+// is there.
+func userDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" || dir == "~" || strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = home + strings.TrimPrefix(dir, "~")
+	}
+	if !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("the folder is a full path, or one under ~, not %q", dir)
+	}
+	dir = filepath.Clean(dir)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("no folder %s", dir)
+	}
+	return dir, nil
+}
+
+// blankNote heads the first message of the user's own subagent name.
+func blankNote(name, dir string) string {
+	return fmt.Sprintf("You are subagent [%s], the user's own: they made you from the page to work with them directly. "+
+		"You have no view of their chat with Opt, and no task from Opt; your replies go to the user, not to Opt, unless Opt writes to you. "+
+		"Your tools run in %s.\n\n", name, dir)
 }
 
 // tell is a message for a subagent: Opt's, by the tell tool, or the
@@ -138,11 +243,15 @@ type tell struct {
 	msg    []block  // the user's, as the subagent gets it: text, images, files
 	logged bool     // in its log already: sent now (tellNow), its turn ended first
 	grant  []string // MCP servers Opt gives it with this: see Tell
+	from   string   // another subagent's, its parent's or its own's, text headed so: see spawns.go
 }
 
 func (t tell) kind() string {
-	if t.user {
+	switch {
+	case t.user:
 		return "user"
+	case t.from != "":
+		return "sub"
 	}
 	return "opt"
 }
@@ -164,6 +273,8 @@ func tellBlocks(ts []tell, head string) []block {
 		switch {
 		case t.user:
 			out = append(append(out, textBlock(userHead)), t.msg...)
+		case t.from != "":
+			out = append(out, textBlock(t.text))
 		case i == 0:
 			out = append(out, textBlock(head+t.text))
 		case ts[i-1].user:
@@ -283,7 +394,8 @@ func (a *Agent) TellUser(name, text string, atts []attachment, now bool) (string
 	_, working := a.running[name]
 	_, resting := a.resting[name]
 	a.mu.Unlock()
-	if _, err := a.loadRecord(name); name == "" || !working && !resting && err != nil {
+	rec, err := a.loadRecord(name)
+	if name == "" || !working && !resting && err != nil {
 		return fmt.Sprintf("no subagent [%s]", name), false
 	}
 	c := a.chat
@@ -295,6 +407,10 @@ func (a *Agent) TellUser(name, text string, atts []attachment, now bool) (string
 	}
 	if !ok {
 		out, ok = a.tell(name, t)
+	}
+	if ok && rec.State == "new" { // so Opt knows who it is
+		c.Log("work", fmt.Sprintf("[opt-chat] The user made subagent [%s] of their own, from the page, on %s: it has no view of this chat and no task from you, "+
+			"and it answers them, not you. Their messages to it show here. Its chat: zoom(%q)", name, rec.on(), name))
 	}
 	if ok {
 		c.Log("work", userLine(c, name, text, atts), m.images...)
@@ -360,7 +476,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		a.userTurnLocked(name, !opt)
 		a.chat.hub.notice("info", "[%s] back at work", name)
 		a.chat.hub.sound(soundAck)
-	case a.looping(name):
+	case a.looping(name) && (h == nil || !h.inTurn || !h.replays): // between two turns: it goes ahead of the next
 		a.logTells(name, ts) // in its log at once, as a tell at work
 		for i := range ts {
 			ts[i].logged = true
@@ -369,7 +485,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		if opt && a.userTurn[name] {
 			a.userTurnLocked(name, false)
 		}
-		return fmt.Sprintf("Sent: [%s] is in a loop: it gets this when its turn ends, ahead of the loop's next step.", name), true
+		return fmt.Sprintf("Sent: [%s] is in a loop, between two turns: it gets this ahead of the next.", name), true
 	case opt && a.userTurn[name]: // Opt's tell in the user's turn: it reports at its end
 		a.userTurnLocked(name, false)
 	}
@@ -387,10 +503,40 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		delete(a.userTurn, name)
 		return fmt.Sprintf("[%s] has just ended.", name), false
 	}
+	if h := a.halts[name]; h != nil && a.looping(name) {
+		h.inTurn = true // one at rest is at work again
+		h.queue(msg)
+		if !resting {
+			return fmt.Sprintf("Sent: [%s] is in a loop: it gets this after its current step, in this turn.", name), true
+		}
+	}
 	if resting {
 		return fmt.Sprintf("Sent: [%s] is at work on it, with all it knew, and will report again.", name), true
 	}
 	return "Sent.", true
+}
+
+// queueHeldLocked sends the tells held for name, in a loop, into the turn
+// p has underway: Claude Code takes them after its current step. a.mu held.
+func (a *Agent) queueHeldLocked(name string, h *halt, p *proc) {
+	ts := a.held[name]
+	if len(ts) == 0 {
+		return
+	}
+	a.held[name] = nil
+	a.logTells(name, ts)
+	if msg := tellBlocks(ts, ""); p.send(msg...) {
+		h.queue(msg)
+		h.told++
+	}
+}
+
+// queue notes msg, sent in a loop's turn, as queued until Claude Code
+// echoes it, by its first text; a.mu held.
+func (h *halt) queue(msg []block) {
+	if len(msg) > 0 && msg[0].Type == "text" && msg[0].Text != "" {
+		h.queued = append(h.queued, msg[0].Text)
+	}
 }
 
 func (a *Agent) logTells(name string, ts []tell) {
@@ -405,7 +551,7 @@ func (a *Agent) logTells(name string, ts []tell) {
 // as Cmd+Enter stops Opt's turn for one: the tool calls it has underway
 // are cut short, and it goes on with t at once, its task still whoever's
 // it was. A tell waits for its step to end, which a long command makes a
-// long wait, and in a loop for its turn to end. In a loop, t goes first
+// long wait, and in a loop between two turns for the next. In a loop, t goes first
 // when the cut turn ends, ahead of the Stop hook's next message (see
 // loopStep); between two of its turns, the interrupt finds nothing to cut
 // and t goes as the next. False when it is not at work in a way an
@@ -436,7 +582,11 @@ func (a *Agent) tellNow(name string, t *tell) (string, bool) {
 
 // anchored is the message that sets a compacted subagent to work again: the
 // view and its task again, then msg, the new messages with their heads.
+// The user's own subagent, with no task, had no view: msg alone.
 func anchored(lines []string, name, task string, msg []block) []block {
+	if task == "" {
+		return msg
+	}
 	_, second := viewMessages(lines, joinText(append([]block{textBlock(fmt.Sprintf("Your context was compacted. Above, the chat's view as it is now. "+
 		"You are still subagent [%s], and your task was:\n%s\n\n", name, task))}, msg...)))
 	return second
@@ -460,15 +610,20 @@ func (a *Agent) agentWriteRef(name, kind, text, ref string) {
 // it was. a.mu held.
 func (a *Agent) resume(name string, ts []tell, auto bool, note string) (string, bool) {
 	rec, err := a.loadRecord(name)
+	fresh := err == nil && rec.State == "new" // the user's own, and its first message: its session starts now
 	switch {
 	case err != nil || rec.Session == "":
 		return fmt.Sprintf("No subagent [%s] is taking messages, and none was saved to resume. A new one can read its chat with zoom(%q).", name, name), false
-	case !saved(rec.Session):
+	case !fresh && !saved(rec.Session):
 		return fmt.Sprintf("[%s]'s saved session is gone from Claude Code's, so it can't be resumed. A new one can read its chat with zoom(%q).", name, name), false
 	case a.life.Err() != nil || a.cutting:
 		return "opt-chat is quitting.", false
 	}
-	msg := joinText(append([]block{textBlock(cmp.Or(note, resumeNote(rec.State)))}, tellBlocks(ts, "Opt's message:\n")...))
+	head := cmp.Or(note, resumeNote(rec.State))
+	if fresh {
+		head = blankNote(name, rec.Dir)
+	}
+	msg := joinText(append([]block{textBlock(head)}, tellBlocks(ts, "Opt's message:\n")...))
 	if auto {
 		msg = tellBlocks(ts, "")
 	} else {
@@ -477,8 +632,10 @@ func (a *Agent) resume(name string, ts []tell, auto bool, note string) (string, 
 	a.calls.Add(1) // as begin, a.mu held
 	a.running[name] = nil
 	a.subLocked(name, func(s *sub) {
-		*s = sub{Name: name, Model: rec.Model, Effort: rec.Effort, Window: rec.Window, State: "starting", Started: nowMs()}
+		*s = rec.sub(name)
+		s.State, s.Started = "starting", nowMs()
 	})
+	rec.Cleared = false // back on the rail
 	a.userTurnLocked(name, rec.User)
 	a.logTells(name, ts)
 	h := a.haltLocked(name)
@@ -486,6 +643,9 @@ func (a *Agent) resume(name string, ts []tell, auto bool, note string) (string, 
 		defer a.calls.Done()
 		a.runAgent(name, h, rec, msg)
 	}()
+	if fresh {
+		return fmt.Sprintf("Started [%s] with your message.", name), true
+	}
 	return fmt.Sprintf("Resuming [%s] where it stopped, from its saved session: it goes on with all it knew, and your message, and will report again.", name), true
 }
 
@@ -499,6 +659,12 @@ type halt struct {
 	now     []tell // the user's, sent now: it was interrupted for them (tellNow); under a.mu
 	cut     bool   // interrupted for the user's message, until its turn's result; under a.mu
 	restart []tell // non-nil: its call ends, to go on from its saved session with these (see restartLocked); under a.mu
+	// In a loop: inTurn while Claude Code is in a turn of its task, not
+	// between two (its hook runs, it compacts); replays once Claude Code has
+	// echoed a message as it took it; queued, the first text of each tell
+	// sent in its turn, until it is echoed. Under a.mu.
+	inTurn, replays bool
+	queued          []string
 }
 
 // haltLocked makes the halt of the subagent name's call about to run; a.mu held.
@@ -577,8 +743,17 @@ func (a *Agent) CompactAgent(name string) (string, bool) {
 func (a *Agent) ClearAgent(name string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if _, on := a.halts[name]; on || a.subs[name] == nil {
+	s := a.subs[name]
+	if _, on := a.halts[name]; on || s == nil {
 		return false
+	}
+	if s.Blank { // the user's own: gone from the rail for good; one never started, ended
+		a.note(name, func(r *agentRecord) {
+			r.Cleared = true
+			if r.State == "new" {
+				r.State = "ended"
+			}
+		})
 	}
 	delete(a.subs, name)
 	return true
@@ -606,7 +781,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		h.cancel()
 	}()
 	task, effort, model, window := rec.Task, rec.Effort, rec.Model, rec.Window
-	resumed := len(msg) > 0
+	fresh := rec.State == "new" // the user's own: msg starts its session, with no view
+	resumed := len(msg) > 0 && !fresh
 	size := 0 // its context: the tokens its latest request read
 	send := func(text string) {
 		a.chat.hub.notice("info", "[%s] done", name)
@@ -617,7 +793,14 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if size > 0 {
 			on += ", its context at " + k(size) + " tokens"
 		}
-		a.report(fmt.Sprintf("%s\n\nRan on %s. %s", text, on, a.chatRef(name))) // as UniiChat ends a report
+		text = fmt.Sprintf("%s\n\nRan on %s. %s", text, on, a.chatRef(name)) // as UniiChat ends a report
+		if rec.Parent != "" {
+			if a.toParent(rec.Parent, name, text) {
+				return
+			}
+			text += fmt.Sprintf("\n\n(opt-chat: [%s], which started it, can't take its report: the user stopped it, or it is gone. So it comes to you.)", rec.Parent)
+		}
+		a.report(text)
 	}
 	report := func(text string) { // the end
 		a.mu.Lock()
@@ -642,6 +825,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		a.note(name, func(r *agentRecord) {
 			r.State = state
 			r.Cut = state == "stopped" && a.autoResume && r.Resumes < resumeMax && saved(r.Session)
+			if fresh && !saved(r.Session) { // its first start ended before Claude Code saved its session: the next message starts it again
+				r.State = "new"
+			}
 			now = *r
 		})
 		switch {
@@ -682,10 +868,14 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	c := a.chat
 	failed := func(err error) string { return "failed: " + err.Error() } // stopped by a quit or a reload: report says so
 	var lines []string
-	if resumed {
+	switch {
+	case resumed:
 		a.chat.hub.notice("info", "[%s] resumed on %s", name, strings.TrimSpace(model+" "+effort))
 		a.chat.hub.sound(soundStart)
-	} else {
+	case fresh:
+		a.chat.hub.notice("info", "[%s] started on %s", name, rec.on())
+		a.chat.hub.sound(soundStart)
+	default:
 		a.agentWrite(name, "task", task)
 		a.chat.hub.notice("info", "[%s] started on %s", name, strings.TrimSpace(model+" "+effort))
 		a.chat.hub.sound(soundStart)
@@ -705,7 +895,9 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		rec.Window = window // its own, saved; the cap applies as it runs
 	}
 	a.mu.Lock()
-	window = a.agentWindowLocked(window)
+	if !rec.Blank { // the user's own: as they chose
+		window = a.agentWindowLocked(window)
+	}
 	a.subLocked(name, func(s *sub) { s.Window, s.MCP = window, rec.MCP })
 	a.mu.Unlock()
 	rec.State = "working"
@@ -714,7 +906,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	if resumed {
 		flags = []string{"--resume", rec.Session}
 	}
-	p, err := a.startAgent(h.ctx, name, model, effort, window, flags...)
+	p, err := a.startAgent(h.ctx, name, rec.Dir, model, effort, window, flags...)
 	if err != nil {
 		report(failed(err))
 		return
@@ -760,6 +952,21 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	}
 	each := func(e event) {
 		if e.Parent != nil {
+			return
+		}
+		if e.Type == "user" && e.Replay { // taken: the tells in it are queued no more
+			a.mu.Lock()
+			first := !h.replays
+			h.replays = true
+			for _, b := range e.blocks() {
+				if i := slices.IndexFunc(h.queued, func(q string) bool { return b.Type == "text" && strings.HasPrefix(b.Text, q) }); i >= 0 {
+					h.queued = slices.Delete(h.queued, i, i+1)
+				}
+			}
+			if first && h.inTurn && !h.cut { // tells held until now go in this turn
+				a.queueHeldLocked(name, h, p)
+			}
+			a.mu.Unlock()
 			return
 		}
 		if e.Type == "system" && e.Subtype == "status" {
@@ -881,7 +1088,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	case resumed && rec.Compacted: // its view and task again, as a tell after a compaction brings them
 		second = anchored(c.viewNow(), name, task, msg)
 		a.note(name, func(r *agentRecord) { r.Compacted = false })
-	case resumed:
+	case resumed, fresh:
 		second = msg
 	default:
 		var first []block
@@ -895,6 +1102,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	acking = false
 	a.mu.Lock()
 	p.send(second...)
+	h.inTurn = true
 	a.running[name] = p
 	a.subLocked(name, func(s *sub) { s.State = "working" })
 	if rec.Loop != nil {
@@ -918,6 +1126,8 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		lines := c.viewNow()
 		a.mu.Lock()
 		h.cut = false
+		more := len(h.queued) > 0 // a tell came too late for this turn: Claude Code runs it as the next
+		h.inTurn = more
 		if r := a.resting[name]; r != nil && r.p == p && r.compacting { // the compaction's end, not a report
 			r.compacting, r.compacted = false, true
 			a.subLocked(name, func(s *sub) { s.State = "resting" })
@@ -945,6 +1155,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 					a.userTurnLocked(name, !anyOpt(msgs))
 					msg = tellBlocks(msgs, optHead)
 				}
+				h.inTurn = true
 				p.send(anchored(lines, name, task, msg)...)
 			}
 			a.mu.Unlock()
@@ -976,19 +1187,28 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			p.send(tellBlocks(ts, "")...)
 			continue
 		}
+		if lp.hook != nil && more && !lp.compacting { // the next turn is the tell's: the hook runs as that one ends
+			lp.again = false
+			a.queueHeldLocked(name, h, p) // the user's, sent now, cut this turn: it goes too
+			a.mu.Unlock()
+			continue
+		}
 		// Asked to compact at a step, but its turn ended first: compacted
 		// now, as it reports.
 		asked := forced == 1 || h.compact
 		forced, h.compact = 0, false
 		a.subLocked(name, func(s *sub) { s.Compact = false })
 		if lp.compacting { // its compaction between turns is over: the next comes with the view and its task
-			a.mu.Unlock()
 			lp.compacting = false
-			a.setSub(name, func(s *sub) { s.State = "working" })
-			if q := a.takeHeld(name); len(q) > 0 { // Opt's tells first
+			a.subLocked(name, func(s *sub) { s.State = "working" })
+			if q := a.held[name]; len(q) > 0 { // Opt's tells first
+				a.held[name] = nil
+				a.logTells(name, q)
 				lp.next = q
 			}
+			h.inTurn = true
 			p.send(anchored(lines, name, task, tellBlocks(lp.next, optHead))...)
+			a.mu.Unlock()
 			continue
 		}
 		final := e.Result
@@ -1010,7 +1230,11 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 					a.setSub(name, func(s *sub) { s.State = "compacting" })
 					p.send(textBlock(compactAsk))
 				} else {
+					a.mu.Lock()
+					h.inTurn = true
 					p.send(tellBlocks(next, "")...)
+					a.queueHeldLocked(name, h, p) // came as it was sent
+					a.mu.Unlock()
 				}
 				continue
 			}
@@ -1108,19 +1332,3 @@ const compactAsk = "/compact Keep what is needed to go on with your task: what w
 
 // goOn sets a subagent compacted mid-task to work again.
 const goOn = "It was compacted in the middle of the task, between two steps: go on with it where you left off."
-
-// freeName is base, or base-2, base-3...: the first no subagent has had.
-// Names are forever: zoom("Name") opens its log. a.mu held.
-func (a *Agent) freeName(base string) string {
-	name := base
-	for n := 2; ; n++ {
-		if _, taken := a.running[name]; !taken {
-			_, lerr := os.Stat(a.agentLog(name))
-			_, merr := os.Stat(strings.TrimSuffix(a.agentLog(name), ".log") + ".mem") // its log gone by hand: the chat would take its steps for the old ones
-			if os.IsNotExist(lerr) && os.IsNotExist(merr) {
-				return name
-			}
-		}
-		name = fmt.Sprintf("%s-%d", base, n)
-	}
-}

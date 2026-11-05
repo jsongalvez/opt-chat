@@ -12,7 +12,7 @@ import (
 )
 
 func searchTool(a *Agent, text string, before int) string {
-	s, _ := callTool(a, false, "search", toolArgs{Text: text, Before: before})
+	s, _ := callTool(a, false, "", "search", toolArgs{Text: text, Before: before})
 	return s
 }
 

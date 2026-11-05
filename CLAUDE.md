@@ -42,7 +42,7 @@ land there. The web tests go through real HTTP and WebSocket connections.
 | `reload.go` | `/reload` and SIGUSR1: build, wait for the chat to be idle, stop every call, exec in place |
 | `chat.go`, `view.go` | the log, the summary tree, the view and its merges |
 | `claude.go` | `claude -p` calls: turns, compactions, subagents |
-| `agents.go`, `subs.go`, `resume.go` | subagents, the page's agents rail, resuming saved sessions |
+| `agents.go`, `subs.go`, `resume.go`, `spawns.go` | subagents, the page's agents rail, resuming saved sessions; subagents a subagent starts |
 | `agentmem.go` | subagents' memory: each one's chat summarized into a tree of its own, `zoom("Name")` and `zoom("Name:id", n)` |
 | `mcp.go`, `wake.go` | the `zoom`, `date`, `search`, `spawn`, `tell` and `wake` tools over MCP; wake-ups |
 | `owed.go` | the owed list: the `owe` tool, `/owed` and `/done`, kept in `<dir>/owed.jsonl` |
@@ -64,7 +64,8 @@ land there. The web tests go through real HTTP and WebSocket connections.
 - The main chat never compacts, by any setting or means: the view is its
   memory. Claude Code's own auto-compaction stays off in every call but
   subagents'. A subagent compacts past its window (`-agent-compact-max`,
-  or less if the user or Opt asks), between two steps, never in one.
+  or less if the user or Opt asks), between two steps, never in one; one
+  the user makes from the page has the window they chose, or none.
 - New behavior is on by default, with a flag or setting to turn it off.
 - Only subagent calls keep a Claude Code session on disk
   (`--session-id`/`--resume`); turns, compactions and control calls run

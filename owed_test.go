@@ -14,7 +14,7 @@ func TestOwed(t *testing.T) {
 	c.Log("opt", "on it")
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
 	off := len(a.mcpList())
-	call := func(fromAgent bool, x toolArgs) string { s, _ := callTool(a, fromAgent, "owe", x); return s }
+	call := func(fromAgent bool, x toolArgs) string { s, _ := callTool(a, fromAgent, "", "owe", x); return s }
 	if got := call(false, toolArgs{From: 0, Text: "x"}); got != "The owed list is off: opt-chat runs with -owed=false." {
 		t.Fatalf("off: %q", got)
 	}
@@ -75,7 +75,7 @@ func TestOwedCloseAndStates(t *testing.T) {
 	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
 	o, _ := loadOwed(c.dir)
 	a.owed = o
-	call := func(x toolArgs) string { s, _ := callTool(a, false, "owe", x); return s }
+	call := func(x toolArgs) string { s, _ := callTool(a, false, "", "owe", x); return s }
 	call(toolArgs{From: 0, Text: "audit the tool"})
 	call(toolArgs{From: 0, Text: strings.Repeat("flash the chip ", 10)})
 	for _, from := range []int{0, 1, 9} { // the asking message, Opt's own, none

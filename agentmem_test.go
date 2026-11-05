@@ -44,7 +44,7 @@ func memAgent(c *Chat) *Agent {
 
 func zoomTool(a *Agent, id any, n int) string {
 	b, _ := json.Marshal(id)
-	s, _ := callTool(a, false, "zoom", toolArgs{ID: b, N: n})
+	s, _ := callTool(a, false, "", "zoom", toolArgs{ID: b, N: n})
 	return s
 }
 
@@ -709,7 +709,7 @@ func TestAgentMemNameReuse(t *testing.T) {
 	closeMem(t, a, "N")
 	os.Remove(filepath.Join(c.dir, "agents", "N.log"))
 	a = memAgent(c)
-	if name := a.freeName("N"); name == "N" {
+	if name := a.freeNameLocked("N"); name == "N" {
 		t.Errorf("spawn gives the name N again, with N.mem left")
 	}
 }
@@ -758,7 +758,7 @@ func TestAgentZoomRun(t *testing.T) {
 	bigAgentLog(t, c, "Big", 3, 10)
 	run := func(n, count int) string {
 		b, _ := json.Marshal("Big:2")
-		s, _ := callTool(a, false, "zoom", toolArgs{ID: b, N: n, Count: count})
+		s, _ := callTool(a, false, "", "zoom", toolArgs{ID: b, N: n, Count: count})
 		return s
 	}
 	want := "2+1|tool: Bash {\"command\":\"make test 0\"}\n\n3+1|echo: result 0 xxxxxxxxxx\n\n4+1|tool: Bash {\"command\":\"make test 1\"}"
