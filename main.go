@@ -147,7 +147,7 @@ func main() {
 	h := &harness{}
 	a := &Agent{chat: c, system: systemPrompt(agentsMD, optMCP, *wake, *owed, *agentMem), agentsMD: agentsMD, claudeMd: *claudeMd, model: *model, effort: *effort,
 		amodel: *amodel, aeffort: *aeffort, cmodel: *cmodel, ceffort: *ceffort, cnice: *cnice, cbare: *cbare, ccopied: *ccopied, perm: *perm, cwd: *cwd, files: was, optMCP: optMCP, claudeJSON: claudeJSON, tools: *tools, ownConfig: *ownConfig, mcpOff: saved.MCPOff, mcpAgents: saved.MCPAgents, skillsSet: saved.Skills, pluginsSet: saved.Plugins, agentWindow: saved.AgentAutocompact, agentCap: *agentCap, recall: *recall,
-		running: map[string]*proc{}, writing: map[string]chan struct{}{}, report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
+		report: func(text string) { h.input(message{kind: "work", text: text}) }, autoResume: *autoResume}
 	a.life, a.stop = context.WithCancel(context.Background())
 	if *agentMem {
 		a.mems = newAgentMems(c, *agentJobs)

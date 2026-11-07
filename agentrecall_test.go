@@ -108,7 +108,7 @@ func TestRecallAgentsSeesNewSteps(t *testing.T) {
 func TestRecallAgentsOff(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	c.Log("user", "fix the needle bug "+strings.Repeat("and more words ", 80))
 	agentLog(t, c, "Fixer", "task: fix it\n\necho@1761134400003: found the needle\n\n")
 	if got := a.Recall("needle", 1, 8); strings.Contains(got, "[Fixer]") || got != (&Agent{chat: c, mems: nil}).Recall("needle", 1, 8) {

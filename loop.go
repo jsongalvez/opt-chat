@@ -115,7 +115,7 @@ func (a *Agent) takeHeld(name string) []tell {
 	a.mu.Lock()
 	q := a.held[name]
 	if len(q) > 0 {
-		a.held[name] = nil
+		put(&a.held, name, nil)
 	}
 	a.mu.Unlock()
 	a.logTells(name, q)

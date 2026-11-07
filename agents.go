@@ -113,7 +113,7 @@ func (a *Agent) spawn(parent string, spawns bool, name, task, effort, model stri
 	}
 	a.mu.Lock()
 	name = a.freeNameLocked(name)
-	a.running[name] = nil // reserved until its call starts
+	put(&a.running, name, nil) // reserved until its call starts
 	a.subLocked(name, func(s *sub) {
 		*s = sub{Name: name, Model: model, Effort: effort, State: "starting", Started: nowMs(), MCP: grant, Parent: parent}
 	})
@@ -306,10 +306,7 @@ func anyOpt(ts []tell) bool { return slices.ContainsFunc(ts, func(t tell) bool {
 // userTurnLocked notes whether the subagent name's turn underway is the
 // user's, in its record too, so that a restart keeps it. a.mu held.
 func (a *Agent) userTurnLocked(name string, user bool) {
-	if a.userTurn == nil {
-		a.userTurn = map[string]bool{}
-	}
-	a.userTurn[name] = user
+	put(&a.userTurn, name, user)
 	a.subLocked(name, func(s *sub) { s.User = user })
 	a.note(name, func(r *agentRecord) { r.User = user })
 }
@@ -481,7 +478,7 @@ func (a *Agent) tell(name string, ts ...tell) (string, bool) {
 		for i := range ts {
 			ts[i].logged = true
 		}
-		a.held[name] = append(a.held[name], ts...)
+		put(&a.held, name, append(a.held[name], ts...))
 		if opt && a.userTurn[name] {
 			a.userTurnLocked(name, false)
 		}
@@ -523,7 +520,7 @@ func (a *Agent) queueHeldLocked(name string, h *halt, p *proc) {
 	if len(ts) == 0 {
 		return
 	}
-	a.held[name] = nil
+	put(&a.held, name, nil)
 	a.logTells(name, ts)
 	if msg := tellBlocks(ts, ""); p.send(msg...) {
 		h.queue(msg)
@@ -573,7 +570,7 @@ func (a *Agent) tellNow(name string, t *tell) (string, bool) {
 	}
 	h.cut = true
 	if a.looping(name) {
-		a.held[name] = append(a.held[name], *t)
+		put(&a.held, name, append(a.held[name], *t))
 	} else {
 		h.now = append(h.now, *t)
 	}
@@ -630,7 +627,7 @@ func (a *Agent) resume(name string, ts []tell, auto bool, note string) (string, 
 		rec.User = !anyOpt(ts)
 	}
 	a.calls.Add(1) // as begin, a.mu held
-	a.running[name] = nil
+	put(&a.running, name, nil)
 	a.subLocked(name, func(s *sub) {
 		*s = rec.sub(name)
 		s.State, s.Started = "starting", nowMs()
@@ -671,10 +668,7 @@ type halt struct {
 func (a *Agent) haltLocked(name string) *halt {
 	ctx, cancel := context.WithCancel(a.life)
 	h := &halt{ctx: ctx, cancel: cancel}
-	if a.halts == nil {
-		a.halts = map[string]*halt{}
-	}
-	a.halts[name] = h
+	put(&a.halts, name, h)
 	return h
 }
 
@@ -1103,13 +1097,10 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 	a.mu.Lock()
 	p.send(second...)
 	h.inTurn = true
-	a.running[name] = p
+	put(&a.running, name, p)
 	a.subLocked(name, func(s *sub) { s.State = "working" })
 	if rec.Loop != nil {
-		if a.held == nil {
-			a.held = map[string][]tell{}
-		}
-		a.held[name] = nil
+		put(&a.held, name, nil)
 	}
 	a.mu.Unlock()
 	lp := loopState{hook: rec.Loop, turns: rec.Turns}
@@ -1134,7 +1125,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			a.note(name, func(r *agentRecord) { r.Compacted = true })
 			if msgs := r.pending; len(msgs) > 0 || r.goOn { // tells that waited for it; its task, cut at a step
 				delete(a.resting, name)
-				a.running[name] = p
+				put(&a.running, name, p)
 				a.restartLocked(name) // for a server granted as it compacted
 				a.subLocked(name, func(s *sub) {
 					s.State, s.Until = "working", 0
@@ -1171,10 +1162,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		if forced == 1 && e.IsError && e.Subtype == "error_during_execution" { // interrupted at a step's end, as asked: compacted, then it goes on
 			forced = 2
 			delete(a.running, name)
-			if a.resting == nil {
-				a.resting = map[string]*rest{}
-			}
-			a.resting[name] = &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: true, goOn: true, pending: h.now}
+			put(&a.resting, name, &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: true, goOn: true, pending: h.now})
 			h.now = nil
 			a.mu.Unlock()
 			p.send(textBlock(compactAsk))
@@ -1202,7 +1190,7 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 			lp.compacting = false
 			a.subLocked(name, func(s *sub) { s.State = "working" })
 			if q := a.held[name]; len(q) > 0 { // Opt's tells first
-				a.held[name] = nil
+				put(&a.held, name, nil)
 				a.logTells(name, q)
 				lp.next = q
 			}
@@ -1246,14 +1234,11 @@ func (a *Agent) runAgent(name string, h *halt, rec agentRecord, msg []block) {
 		}
 		// At rest: a tell sets it to work again, with all it knew. Past its
 		// window, it is compacted now, between steps, never in one.
-		if a.resting == nil {
-			a.resting = map[string]*rest{}
-		}
 		delete(a.running, name)
 		r := &rest{p: p, until: time.Now().Add(cmp.Or(a.rest, agentRest)), task: task, compacting: window > 0 && size > window || asked, compacted: midCompacted}
 		mid := midCompacted
 		midCompacted = false
-		a.resting[name] = r
+		put(&a.resting, name, r)
 		a.subLocked(name, func(s *sub) {
 			s.State, s.Until = "resting", r.until.UnixMilli()
 			if r.compacting {

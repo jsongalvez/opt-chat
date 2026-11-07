@@ -12,7 +12,7 @@ func TestOwed(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	c.Log("user", "make the build green")
 	c.Log("opt", "on it")
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	off := len(a.mcpList())
 	call := func(fromAgent bool, x toolArgs) string { s, _ := callTool(a, fromAgent, "", "owe", x); return s }
 	if got := call(false, toolArgs{From: 0, Text: "x"}); got != "The owed list is off: opt-chat runs with -owed=false." {
@@ -72,7 +72,7 @@ func TestOwedCloseAndStates(t *testing.T) {
 	c.Log("user", "audit the tool") // 0
 	c.Log("opt", "it's done")       // 1
 	c.Log("user", "looks good")     // 2
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	o, _ := loadOwed(c.dir)
 	a.owed = o
 	call := func(x toolArgs) string { s, _ := callTool(a, false, "", "owe", x); return s }

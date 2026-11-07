@@ -88,7 +88,7 @@ func TestSearchAgentsBounded(t *testing.T) {
 func TestSearchAgentsOff(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	c.Log("user", "fix the needle bug")
 	agentLog(t, c, "Fixer", "task: fix it\n\nagent@1761134400003: fixed the needle\n\n")
 	if got := searchTool(a, "needle", 0); strings.Contains(got, "also in") || got != c.Search("needle", 0) {

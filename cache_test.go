@@ -6,6 +6,10 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -136,10 +140,10 @@ func TestCacheReplay(t *testing.T) {
 	}
 	c, _ := fakeChat(t, t.TempDir(), 0)
 	cache := &fakeCache{live: map[[32]byte]bool{}, use: map[string]*cacheUse{}}
-	a := &Agent{writing: map[string]chan struct{}{}}
+	a := &Agent{}
 	// Every compaction acked, as before 2026-10-20, against a cache of its own.
 	acked := &fakeCache{live: map[[32]byte]bool{}, use: map[string]*cacheUse{}}
-	a0 := &Agent{writing: map[string]chan struct{}{}}
+	a0 := &Agent{}
 	rng := rand.New(rand.NewPCG(1, 2))
 	words := func(lo, hi int) string { // a text of lo to hi bytes
 		n := lo + rng.IntN(hi-lo+1)
@@ -249,7 +253,7 @@ func (c *Chat) logLen() int {
 // further back, is written anew.
 func TestCompactView(t *testing.T) {
 	t.Parallel()
-	a := &Agent{writing: map[string]chan struct{}{}}
+	a := &Agent{}
 	lines := make([]string, 80)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("%d+1|user: line %d", i, i)
@@ -278,7 +282,7 @@ func TestCompactView(t *testing.T) {
 	}
 	a.mu.Lock()
 	for k := range a.cached {
-		a.cached[k] = time.Now().Add(-a.cachedFor())
+		put(&a.cached, k, time.Now().Add(-a.cachedFor()))
 	}
 	a.mu.Unlock()
 	if f, _ := a.compactView(t.Context(), "m", lines[:41], 41, task); f == nil {
@@ -307,7 +311,7 @@ func TestCompactView(t *testing.T) {
 // then: a call that waited on one that failed before it writes it anew.
 func TestAckNotesCached(t *testing.T) {
 	t.Parallel()
-	a := &Agent{writing: map[string]chan struct{}{}}
+	a := &Agent{}
 	ack := func(out ...string) error {
 		p := &proc{prefix: "m", ctx: t.Context(), out: bufio.NewScanner(strings.NewReader(strings.Join(out, "\n")))}
 		return a.ack(p, []block{textBlock("view")}, &usage{}, nil)
@@ -344,7 +348,7 @@ func TestCacheLifeFromResults(t *testing.T) {
 		a.noteCached("m\x00view")
 		a.mu.Lock()
 		for k := range a.cached {
-			a.cached[k] = time.Now().Add(-ago)
+			put(&a.cached, k, time.Now().Add(-ago))
 		}
 		a.mu.Unlock()
 		return a.inCache(t.Context(), "m\x00view")
@@ -363,5 +367,40 @@ func TestCacheLifeFromResults(t *testing.T) {
 	}
 	if len(all) != 2 || all[0].Models["claude-small"].Write1h != 500 || all[1].Models["claude-small"].Write5m != 500 {
 		t.Fatalf("the log lost which cache was written: %+v", all)
+	}
+}
+
+// An Agent needs no maps made for it: a zero one writes the cache once and
+// reserves a subagent's name, and every write to one of its maps goes
+// through put, so a map added later needs no constructor to list it.
+func TestZeroAgentMaps(t *testing.T) {
+	t.Parallel()
+	a := &Agent{chat: &Chat{dir: t.TempDir()}}
+	a.writeOnce(t.Context(), "p")()
+	a.noteCached("p")
+	a.mu.Lock()
+	a.userTurnLocked("Scout", true)
+	a.mu.Unlock()
+	var maps []string
+	for f := range reflect.TypeFor[Agent]().Fields() {
+		if f.Type.Kind() == reflect.Map {
+			maps = append(maps, f.Name)
+		}
+	}
+	direct := regexp.MustCompile(`\ba\.(` + strings.Join(maps, "|") + `)(\[[^\n]*\] = | = map\[)`)
+	files, _ := filepath.Glob("*.go")
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if direct.MatchString(line) {
+				t.Errorf("%s:%d writes an Agent map without put: %s", f, i+1, strings.TrimSpace(line))
+			}
+		}
 	}
 }

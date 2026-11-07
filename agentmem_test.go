@@ -39,7 +39,7 @@ func bigAgentLog(t *testing.T, c *Chat, name string, n, size int) {
 
 // memAgent is an Agent on c with subagents' memory on, as by default.
 func memAgent(c *Chat) *Agent {
-	return &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}, mems: newAgentMems(c, defaultAgentJobs)}
+	return &Agent{chat: c, mems: newAgentMems(c, defaultAgentJobs)}
 }
 
 func zoomTool(a *Agent, id any, n int) string {
@@ -149,7 +149,7 @@ func TestAgentMemTree(t *testing.T) {
 func TestAgentMemOff(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	bigAgentLog(t, c, "Big", 3, 10)
 	a.agentWrite("Big", "agent", "one more step")
 	got := zoomTool(a, "Big", 0)
@@ -585,7 +585,7 @@ func TestAgentMemOffSeals(t *testing.T) {
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	os.MkdirAll(filepath.Join(c.dir, "agents"), 0o700)
 	os.WriteFile(filepath.Join(c.dir, "agents", "O.log"), []byte("task: work\n\ntool@1761134400001#toolu_1: Bash {\"comm"), 0o600)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	a.agentWrite("O", "agent", "after the crash")
 	a.mems = newAgentMems(c, 1) // a restart with memory on
 	got := memTexts(t, a, "O")

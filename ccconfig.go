@@ -463,10 +463,7 @@ func (a *Agent) setSkill(ctx context.Context, name, state string) error {
 		return fmt.Errorf("%s is set by %s", name, all[i].LockedBy)
 	}
 	a.mu.Lock()
-	if a.skillsSet == nil {
-		a.skillsSet = map[string]string{}
-	}
-	a.skillsSet[name] = state
+	put(&a.skillsSet, name, state)
 	set := maps.Clone(a.skillsSet)
 	a.mu.Unlock()
 	return a.updateSettings(func(s *settings) { s.Skills = set })
@@ -554,10 +551,7 @@ func (a *Agent) setPlugin(ctx context.Context, id string, on bool) error {
 		return fmt.Errorf("no plugin %q", id)
 	}
 	a.mu.Lock()
-	if a.pluginsSet == nil {
-		a.pluginsSet = map[string]bool{}
-	}
-	a.pluginsSet[id] = on
+	put(&a.pluginsSet, id, on)
 	set := maps.Clone(a.pluginsSet)
 	a.mu.Unlock()
 	if err := a.updateSettings(func(s *settings) { s.Plugins = set }); err != nil {

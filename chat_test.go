@@ -345,7 +345,7 @@ func TestRetryAtNextMessage(t *testing.T) {
 
 func TestWriteOnce(t *testing.T) {
 	t.Parallel()
-	a := &Agent{writing: map[string]chan struct{}{}}
+	a := &Agent{}
 	release := a.writeOnce(t.Context(), "p")
 	other := a.writeOnce(t.Context(), "q") // another prefix never waits
 	other()
@@ -1164,7 +1164,7 @@ func TestZoomRun(t *testing.T) {
 		t.Fatalf("past the chat: %q", got)
 	}
 	// The tool: count goes with n = 1 alone.
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	if got, _ := callTool(a, false, "", "zoom", toolArgs{ID: jsontext.Value("0"), Count: 2}); got != "0+1|user: hi\n\n1+1|tool: zoom {\"id\":0}" {
 		t.Fatalf("tool: %q", got)
 	}

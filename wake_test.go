@@ -100,7 +100,7 @@ func TestWaker(t *testing.T) {
 func TestWakeTool(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	if n := len(a.mcpList()); n != 5 {
 		t.Fatalf("tools when off: %d", n)
 	}

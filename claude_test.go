@@ -504,7 +504,7 @@ func fakeAgent(t *testing.T, c *Chat) (*Agent, func() [][]string) {
 		t.Fatal(err)
 	}
 	a := &Agent{claude: filepath.Join(bin, "claude"), chat: c, system: "system", mcpConfig: "turn-mcp", agentMCP: "agent-mcp", model: "big", amodel: "mid", cmodel: "small",
-		perm: "auto", cwd: t.TempDir(), tools: "Read", running: map[string]*proc{}, writing: map[string]chan struct{}{},
+		perm: "auto", cwd: t.TempDir(), tools: "Read",
 		report: func(text string) { c.Log("work", text) }, mems: newAgentMems(c, defaultAgentJobs)}
 	a.life, a.stop = context.WithCancel(context.Background())
 	t.Cleanup(a.quit)
@@ -1243,7 +1243,8 @@ func TestTurnNamesRunning(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
 	a, _ := fakeAgent(t, c)
-	a.running["Scout"], a.running["Ann"] = nil, nil
+	put(&a.running, "Scout", nil)
+	put(&a.running, "Ann", nil)
 	if err := (&Turn{agent: a}).Run(context.Background(), []message{{kind: "user", text: "hi"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1436,7 +1437,7 @@ func TestAgentsReload(t *testing.T) {
 // switch sent meanwhile.
 func TestAckReleases(t *testing.T) {
 	t.Parallel()
-	a := &Agent{writing: map[string]chan struct{}{}}
+	a := &Agent{}
 	out := strings.Join([]string{
 		`{"type":"system","subtype":"init"}`,
 		`{"type":"control_response","response":{"subtype":"success","request_id":"opt-mode-1"}}`,

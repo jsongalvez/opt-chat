@@ -47,13 +47,10 @@ const subsKept = 8
 
 // subLocked applies f to the subagent name, a.mu held.
 func (a *Agent) subLocked(name string, f func(*sub)) {
-	if a.subs == nil {
-		a.subs = map[string]*sub{}
-	}
 	s := a.subs[name]
 	if s == nil {
 		s = &sub{Name: name}
-		a.subs[name] = s
+		put(&a.subs, name, s)
 	}
 	f(s)
 }
@@ -135,13 +132,10 @@ func (a *Agent) agentDelta(name, k, s string, reset bool) {
 		return
 	}
 	a.mu.Lock()
-	if a.subLive == nil {
-		a.subLive = map[string]*agentLive{}
-	}
 	w := a.subLive[name]
 	if w == nil {
 		w = &agentLive{}
-		a.subLive[name] = w
+		put(&a.subLive, name, w)
 	}
 	f := w.field(k)
 	switch {

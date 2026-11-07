@@ -39,7 +39,7 @@ func TestStatusCommand(t *testing.T) {
 		}
 	}
 	a.agentWindow, a.resting = 250_000, map[string]*rest{"Ann": nil}
-	a.running["Scout"] = nil
+	put(&a.running, "Scout", nil)
 	a.mu.Lock()
 	a.claude = filepath.Join(t.TempDir(), "claude") // none there
 	a.mu.Unlock()

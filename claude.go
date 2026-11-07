@@ -111,6 +111,15 @@ type Agent struct {
 	modeMu sync.Mutex // mode switches' writes to the calls
 }
 
+// put sets (*m)[k] = v, making the map on first use: an Agent's maps are
+// all made this way, so a zero Agent works and no constructor lists them.
+func put[K comparable, V any](m *map[K]V, k K, v V) {
+	if *m == nil {
+		*m = map[K]V{}
+	}
+	(*m)[k] = v
+}
+
 // writeOnce lets one call at a time write a prefix to the cache: a call
 // whose first message another call is writing waits until that call's
 // response begins, then reads the entry instead of paying to write it too
@@ -127,7 +136,7 @@ func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 		return func() {}
 	}
 	ch := make(chan struct{})
-	a.writing[prefix] = ch
+	put(&a.writing, prefix, ch)
 	a.mu.Unlock()
 	return func() {
 		a.mu.Lock()
@@ -188,11 +197,8 @@ func (a *Agent) inCache(ctx context.Context, prefix string) bool {
 func (a *Agent) noteCached(prefix string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.cached == nil {
-		a.cached = map[[32]byte]time.Time{}
-	}
 	maps.DeleteFunc(a.cached, func(_ [32]byte, at time.Time) bool { return time.Since(at) >= a.cachedFor() })
-	a.cached[sha256.Sum256([]byte(prefix))] = time.Now()
+	put(&a.cached, sha256.Sum256([]byte(prefix)), time.Now())
 }
 
 func (a *Agent) takeCompactions() (int, usage) {
@@ -662,10 +668,7 @@ func (a *Agent) startCall(ctx context.Context, model, effort string, r role, win
 		p.onRequest = func(e event) { a.request(p, e) }
 		a.modeMu.Lock()
 		a.mu.Lock()
-		if a.live == nil {
-			a.live = map[*proc]struct{}{}
-		}
-		a.live[p] = struct{}{}
+		put(&a.live, p, struct{}{})
 		now := a.perm
 		a.ctlSeq++
 		id := fmt.Sprint("opt-mode-", a.ctlSeq)

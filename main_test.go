@@ -48,7 +48,7 @@ func TestFilePaths(t *testing.T) {
 // Commands change the turns' model and effort; any other /word is held back.
 func TestCommand(t *testing.T) {
 	t.Parallel()
-	a := &Agent{chat: &Chat{dir: "/chat"}, model: "fable", effort: "high", perm: "auto", running: map[string]*proc{}}
+	a := &Agent{chat: &Chat{dir: "/chat"}, model: "fable", effort: "high", perm: "auto"}
 	for _, step := range []struct{ in, out string }{
 		{"/model", "Turns: fable, effort high, mode auto."},
 		{" /model opus ", "Turns: opus, effort high, mode auto."},
@@ -71,7 +71,8 @@ func TestCommand(t *testing.T) {
 			t.Fatalf("%q: %q, %v; want %q", step.in, out, ok, step.out)
 		}
 	}
-	a.running["Scout"], a.running["Ann"] = nil, nil
+	put(&a.running, "Scout", nil)
+	put(&a.running, "Ann", nil)
 	if out, _, _ := command(a, "/agents"); !strings.HasPrefix(out, "At work: [Ann], [Scout]. ") {
 		t.Fatal(out)
 	}

@@ -23,7 +23,7 @@ func TestMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Log("user", "read", pdf)
-	a := &Agent{chat: c, running: map[string]*proc{}, writing: map[string]chan struct{}{}}
+	a := &Agent{chat: c}
 	cfg, agentCfg, err := serveMCP(a)
 	if err != nil {
 		t.Fatal(err)

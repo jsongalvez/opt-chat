@@ -56,10 +56,7 @@ func (a *Agent) noteLimits(l limitInfo) {
 }
 
 func (a *Agent) setLimit(w window) {
-	if a.limits == nil {
-		a.limits = map[string]window{}
-	}
-	a.limits[w.Name] = w
+	put(&a.limits, w.Name, w)
 }
 
 // askUsage asks Claude Code for every window, at most once a minute.
