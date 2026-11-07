@@ -51,7 +51,6 @@ func main() {
 	owed := flag.Bool("owed", true, "keep Opt's owed list in <dir>/owed.jsonl: what the user asked for and Opt hasn't done, each citing the user's message; only the user closes an item (/done)")
 	wake := flag.Bool("wake", true, "let Opt set wake-ups: messages to itself at a time, kept in <dir>/wake.jsonl")
 	resumeAtReset := flag.Bool("resume-at-reset", true, "when the plan's usage limit stops Opt's turn or a subagent, start a turn at the reset and resume the subagents, from <dir>/resume.json")
-	cacheTTL := flag.Duration("cache-ttl", time.Hour, "how long Claude's prompt cache keeps an entry: 1h on a Claude plan, 5m on an API key; compactions reuse a cached first message up to 5m less")
 	resetGrace := flag.Duration("reset-grace", 90*time.Second, "how long after the reset -resume-at-reset waits")
 	autoResume := flag.Bool("auto-resume", true, fmt.Sprintf("as opt-chat starts, resume Opt's turn and the subagents a quit, a crash or /reload cut off mid-task, under a day ago, up to %d times in a row", resumeMax))
 	hideEmail := flag.Bool("hide-email", true, "drop your Claude account's email from the context Claude Code adds to calls: always in compactions, and in turns and subagents with -claude-config=false")
@@ -101,7 +100,6 @@ func main() {
 	if *jobs < 1 || *agentJobs < 1 {
 		fatal("-jobs and -agent-jobs must be 1 or more")
 	}
-	cachedFor = max(*cacheTTL-5*time.Minute, *cacheTTL*4/5)
 	if *agentCap != 0 && (*agentCap < windowMin || *agentCap > windowMax) {
 		fatal("-agent-compact-max must be 0, or from %d to %d", windowMin, windowMax)
 	}

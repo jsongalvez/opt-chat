@@ -77,28 +77,42 @@ def pct(xs, q):
     return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else 0
 
 
+def life(r):
+    """The cache's life for a record's writes, in seconds: 1 hour on a Claude plan, 5 minutes on an API key."""
+    return 300 if tok(r, "cacheCreationEphemeral5mInputTokens") and not tok(r, "cacheCreationEphemeral1hInputTokens") else 3600
+
+
 def causes(rs, rates):
-    """Why big cache writes happened, from records that log prefix, first and gapS."""
-    seen, by = set(), Counter()
-    cost = Counter()
+    """Why big cache writes happened, from records that log prefix and first; gaps span restarts."""
+    prefixes, last = set(), {}
+    by, cost = Counter(), Counter()
     logged = [r for r in rs if r.get("prefix")]
     for r in logged:
+        pair, t = (r["prefix"], r.get("first")), datetime.fromisoformat(r["date"])
         if tok(r, K[1]) > BIG_WRITE:
-            if r["prefix"] not in seen:
+            if r["prefix"] not in prefixes:
                 k = "new system prompt, tools, model or effort"
-            elif not r.get("gapS"):
+            elif pair not in last:
                 k = "new first message (view changed)"
-            elif r["gapS"] > 3600:
-                k = "same pair, over 1h since last result (expired)"
+            elif (t - last[pair]).total_seconds() > life(r):
+                k = "same pair, past the cache's life (expired)"
             else:
-                k = "same pair within 1h (unexplained)"
+                k = "same pair within the cache's life (unexplained)"
             by[k] += 1
             cost[k] += sum(s.get(K[1], 0) * rates.get(m, [0] * 4)[1] / 1e6 for m, s in r["models"].items())
-        seen.add(r["prefix"])
+        prefixes.add(r["prefix"])
+        last[pair] = t
     if logged:
         print(f"   miss causes ({len(logged)} records log them):")
         for k, n in by.most_common():
             print(f"      {k}: {n}, write ${cost[k]:.2f}")
+
+
+def cache_ratio(rs):
+    read, write = sum(tok(r, K[2]) for r in rs), sum(tok(r, K[1]) for r in rs)
+    h1, m5 = sum(tok(r, "cacheCreationEphemeral1hInputTokens") for r in rs), sum(tok(r, "cacheCreationEphemeral5mInputTokens") for r in rs)
+    split = f", writes 1h {h1 / write:.0%} 5m {m5 / write:.0%}" if h1 + m5 else ""
+    print(f"   cache tokens read {read / 1e6:.1f}M write {write / 1e6:.1f}M, read/write {read / max(write, 1):.2f}{split}")
 
 
 def main():
@@ -149,6 +163,7 @@ def main():
                 prev = t
             for k, (n, d) in by.items():
                 print(f"   records writing >{BIG_WRITE // 1000}k to the cache {k}: {n}, write ${d:.2f}")
+        cache_ratio(rs)
         if role in ("turn", "agent"):
             causes(rs, rates)
 

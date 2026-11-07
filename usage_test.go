@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json/v2"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Every result's spend since the last one is kept in usage/, a resumed
@@ -69,9 +74,8 @@ func TestUsage(t *testing.T) {
 	}
 }
 
-// Each record names what the cache reuse hangs on (prefix, first message)
-// and how long since the same pair last had a result, so a report can tell
-// an expired entry from a changed prompt or view.
+// Each record names what the cache reuse hangs on (prefix, first message),
+// so a report can tell an expired entry from a changed prompt or view.
 func TestUsageMissCause(t *testing.T) {
 	t.Parallel()
 	c, _ := fakeChat(t, t.TempDir(), 100)
@@ -84,8 +88,7 @@ func TestUsageMissCause(t *testing.T) {
 		p.send(block{Type: "text", Text: first})
 		return p
 	}
-	p := call("view A")
-	a.noteSpend(p, roleTurn, result(0.1))
+	a.noteSpend(call("view A"), roleTurn, result(0.1))
 	a.noteSpend(call("view A"), roleTurn, result(0.2)) // same pair, a new call
 	a.noteSpend(call("view B"), roleTurn, result(0.3)) // view changed
 	all, err := readSpend(c.dir, started)
@@ -95,14 +98,64 @@ func TestUsageMissCause(t *testing.T) {
 	if len(all) != 3 {
 		t.Fatalf("%d records", len(all))
 	}
-	if all[0].Prefix == "" || all[0].First == "" || all[0].GapS != 0 {
+	if all[0].Prefix == "" || all[0].First == "" {
 		t.Fatalf("first call: %+v", all[0])
 	}
-	if all[1].Prefix != all[0].Prefix || all[1].First != all[0].First || all[1].GapS < 1 {
+	if all[1].Prefix != all[0].Prefix || all[1].First != all[0].First {
 		t.Fatalf("same pair again: %+v", all[1])
 	}
-	if all[2].First == all[0].First || all[2].GapS != 0 {
+	if all[2].Prefix != all[0].Prefix || all[2].First == all[0].First {
 		t.Fatalf("changed view: %+v", all[2])
+	}
+}
+
+// tools/perf/usage_report.py names each big cache write's cause from the
+// records, across restarts, by the life of the cache that was written.
+func TestUsageReportCauses(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3")
+	}
+	dir := t.TempDir()
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	var b strings.Builder
+	rec := func(min int, prefix, first string, m5, h1 int) {
+		s := spend{Date: at.Add(time.Duration(min) * time.Minute), Role: "turn", Requests: 1, Prefix: prefix, First: first,
+			Models: map[string]modelSpend{"claude-big": {Write: m5 + h1, Write5m: m5, Write1h: h1, Read: 1000}}}
+		j, _ := json.Marshal(s)
+		b.Write(append(j, '\n'))
+	}
+	rec(0, "p1", "v1", 0, 50000)  // new prompt
+	rec(10, "p1", "v1", 0, 50000) // within the hour: unexplained
+	rec(80, "p1", "v1", 0, 50000) // past it: expired
+	rec(81, "p1", "v2", 0, 50000) // new view
+	rec(90, "p2", "v2", 50000, 0) // new prompt
+	rec(97, "p2", "v2", 50000, 0) // past 5 minutes: expired
+	rec(99, "p2", "v2", 50000, 0) // within 5 minutes: unexplained
+	if err := os.MkdirAll(filepath.Join(dir, "usage"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "usage", "2026-11-01.jsonl"), []byte(b.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, err := os.ReadFile("tools/perf/usage_report.py") // read here, so go test reruns when it changes
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("python3", "-I", "-c", string(script), dir).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"new system prompt, tools, model or effort: 2,",
+		"same pair, past the cache's life (expired): 2,",
+		"same pair within the cache's life (unexplained): 2,",
+		"new first message (view changed): 1,",
+		"read/write 0.02, writes 1h 57% 5m 43%",
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("no %q in:\n%s", want, out)
+		}
 	}
 }
 

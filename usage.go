@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -29,13 +28,15 @@ type modelSpend struct {
 	Output   int     `json:"outputTokens"`
 	Read     int     `json:"cacheReadInputTokens"`
 	Write    int     `json:"cacheCreationInputTokens"`
+	Write5m  int     `json:"cacheCreationEphemeral5mInputTokens,omitzero"` // of Write: the 5-minute cache's (an API key)
+	Write1h  int     `json:"cacheCreationEphemeral1hInputTokens,omitzero"` // and the 1-hour cache's (a Claude plan)
 	Searches int     `json:"webSearchRequests,omitzero"`
 	Cost     float64 `json:"costUSD"` // at list prices
 }
 
 func (m modelSpend) add(o modelSpend, sign int) modelSpend {
 	return modelSpend{m.Input + sign*o.Input, m.Output + sign*o.Output, m.Read + sign*o.Read, m.Write + sign*o.Write,
-		m.Searches + sign*o.Searches, m.Cost + float64(sign)*o.Cost}
+		m.Write5m + sign*o.Write5m, m.Write1h + sign*o.Write1h, m.Searches + sign*o.Searches, m.Cost + float64(sign)*o.Cost}
 }
 
 // spent is a call's spend as its last result told it. Claude Code counts
@@ -56,18 +57,12 @@ type spend struct {
 	APIms    int64                 `json:"apiMs"`
 	Cost     float64               `json:"cost"`
 	Models   map[string]modelSpend `json:"models"`
-	// What the cache reuse depends on, so a report can tell why a call
-	// wrote the cache again: Prefix is the model, effort, system prompt and
-	// tools; First the call's first message; GapS the seconds since the
-	// last result of a call with both the same, in this run (absent: none).
+	// What the cache reuse depends on, hashed, so a report can tell why a
+	// call wrote the cache again: Prefix is the model, effort, system prompt
+	// and tools; First the call's first message.
 	Prefix string `json:"prefix,omitzero"`
 	First  string `json:"first,omitzero"`
-	GapS   int64  `json:"gapS,omitzero"`
 }
-
-// lastResult is when a call with a prefix and first message last had a
-// result, for spend.GapS.
-var lastResult sync.Map // string -> time.Time
 
 func shortHash(s string) string {
 	h := sha256.Sum256([]byte(s))
@@ -93,10 +88,8 @@ func (a *Agent) noteSpend(p *proc, r role, e event) {
 		}
 	}
 	p.spent = spent{Cost: e.Cost, APIms: e.APIms, Models: e.Models}
+	a.noteCacheLife(s.Models)
 	s.Prefix, s.First = shortHash(p.prefix), p.first
-	if was, ok := lastResult.Swap(s.Prefix+" "+s.First, s.Date); ok {
-		s.GapS = max(int64(s.Date.Sub(was.(time.Time))/time.Second), 1)
-	}
 	if len(s.Models) == 0 {
 		return
 	}

@@ -15,6 +15,6 @@ we drop, leaves it in the same commit.
 | MCP tools/list with sorted keys | mcp.go | yes (cache-stable tools) | no PR | tiny |
 | Log a Cmd+Enter message to a subagent before the interrupt | subs.go | yes | no PR | tiny |
 | Fork CI and upstream-branch CI | .github/workflows/ci.yml, tools/ci-upstream-branch.sh, tools/fork-rebuild-check.sh | yes | fork only | small |
-| Cache-miss causes in the usage log, `-cache-ttl` | branch perf-bench (8d003c6); tools/perf | not yet live | separate PR, later | small |
+| Cache-miss causes in the usage log; the cache's life (5m or 1h) taken from each result | usage.go, claude.go `cachedFor`; tools/perf/usage_report.py | not yet live (needs a restart) | separate PR, later | small |
 
 Not on fork master yet: upstream def9267 (make your own subagent from the page).

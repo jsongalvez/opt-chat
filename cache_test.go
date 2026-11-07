@@ -278,7 +278,7 @@ func TestCompactView(t *testing.T) {
 	}
 	a.mu.Lock()
 	for k := range a.cached {
-		a.cached[k] = time.Now().Add(-cachedFor)
+		a.cached[k] = time.Now().Add(-a.cachedFor())
 	}
 	a.mu.Unlock()
 	if f, _ := a.compactView(t.Context(), "m", lines[:41], 41, task); f == nil {
@@ -326,5 +326,42 @@ func TestAckNotesCached(t *testing.T) {
 	release()
 	if <-done {
 		t.Fatal("a writer that failed left its first message cached")
+	}
+}
+
+// The cache's life is the one the calls' results report: a 5-minute write
+// (an API key) leaves a first message gone after 4 minutes, a 1-hour write
+// (a Claude plan) keeps it 55, and the usage log keeps which it was.
+func TestCacheLifeFromResults(t *testing.T) {
+	t.Parallel()
+	c, _ := fakeChat(t, t.TempDir(), 100)
+	a, _ := fakeAgent(t, c)
+	write := func(m5, h1 int) {
+		p := &proc{prefix: "m", stdin: nopWriter{}}
+		a.noteSpend(p, roleCompact, event{Turns: 1, Cost: 0.01, Models: map[string]modelSpend{"claude-small": {Write: m5 + h1, Write5m: m5, Write1h: h1, Cost: 0.01}}})
+	}
+	cachedAgo := func(ago time.Duration) bool {
+		a.noteCached("m\x00view")
+		a.mu.Lock()
+		for k := range a.cached {
+			a.cached[k] = time.Now().Add(-ago)
+		}
+		a.mu.Unlock()
+		return a.inCache(t.Context(), "m\x00view")
+	}
+	write(0, 500)
+	if !cachedAgo(30 * time.Minute) {
+		t.Fatal("a 1-hour write taken as gone after 30 minutes")
+	}
+	write(500, 0)
+	if cachedAgo(6*time.Minute) || !cachedAgo(3*time.Minute) {
+		t.Fatal("a 5-minute write not taken as gone after 6 minutes, or gone after 3")
+	}
+	all, err := readSpend(c.dir, started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].Models["claude-small"].Write1h != 500 || all[1].Models["claude-small"].Write5m != 500 {
+		t.Fatalf("the log lost which cache was written: %+v", all)
 	}
 }

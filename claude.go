@@ -82,6 +82,7 @@ type Agent struct {
 	running     map[string]*proc         // agents by name; nil while starting or finished
 	writing     map[string]chan struct{} // first messages being written to the cache
 	cached      map[[32]byte]time.Time   // compactions' first messages in the cache, by hash: when last written or read
+	cacheLife   time.Duration            // the cache's life, from the last result that wrote it; 0: none yet
 	modelList   []modelInfo              // Claude Code's, once asked
 	limits      map[string]window        // the plan's usage limits, by name: see limits.go
 	refused     limitInfo                // the last rate_limit_event that gave a status: see refusedLocked
@@ -137,9 +138,28 @@ func (a *Agent) writeOnce(ctx context.Context, prefix string) (release func()) {
 }
 
 // cachedFor is how long a first message is taken to stay cached after it
-// was last written or read, a margin under the cache's life (-cache-ttl):
-// Claude Code on a plan writes 1-hour entries, on an API key 5-minute ones.
-var cachedFor = 55 * time.Minute
+// was last written or read: a margin under the life of the cache the last
+// write went to, as its result reported it (Claude Code on a plan writes
+// 1-hour entries, on an API key 5-minute ones), and 5 minutes before any.
+// a.mu held.
+func (a *Agent) cachedFor() time.Duration {
+	life := cmp.Or(a.cacheLife, 5*time.Minute)
+	return max(life-5*time.Minute, life*4/5)
+}
+
+// noteCacheLife takes the cache's life from a result's writes.
+func (a *Agent) noteCacheLife(models map[string]modelSpend) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, m := range models {
+		switch {
+		case m.Write1h > 0:
+			a.cacheLife = time.Hour
+		case m.Write5m > 0:
+			a.cacheLife = 5 * time.Minute
+		}
+	}
+}
 
 // inCache reports whether the cache holds a compaction's first message,
 // waiting for a call that is writing it to begin its response, or to fail
@@ -158,9 +178,9 @@ func (a *Agent) inCache(ctx context.Context, prefix string) bool {
 		}
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	at, ok := a.cached[h]
-	a.mu.Unlock()
-	return ok && time.Since(at) < cachedFor
+	return ok && time.Since(at) < a.cachedFor()
 }
 
 // noteCached notes that a compaction's first message was written or read
@@ -171,7 +191,7 @@ func (a *Agent) noteCached(prefix string) {
 	if a.cached == nil {
 		a.cached = map[[32]byte]time.Time{}
 	}
-	maps.DeleteFunc(a.cached, func(_ [32]byte, at time.Time) bool { return time.Since(at) >= cachedFor })
+	maps.DeleteFunc(a.cached, func(_ [32]byte, at time.Time) bool { return time.Since(at) >= a.cachedFor() })
 	a.cached[sha256.Sum256([]byte(prefix))] = time.Now()
 }
 
